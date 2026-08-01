@@ -1,0 +1,51 @@
+# Runs the Pima County new-homeowner tracker once a day.
+# 13:30 UTC = 6:30 AM Phoenix time (after the Assessor's nightly
+# file regenerates around 12:20 AM, and offset from the permit
+# scrape at 6:00 AM).
+
+name: Daily Pima homeowner scrape
+
+on:
+  schedule:
+    - cron: "30 13 * * *"
+  workflow_dispatch:
+    inputs:
+      sample_limit:
+        description: "Test mode: only process this many new sales (leave blank for full run)"
+        required: false
+        default: ""
+      sale_years:
+        description: "Years to pull, comma-separated (blank = current year)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sales-scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run sales scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SAMPLE_LIMIT: ${{ github.event.inputs.sample_limit }}
+          SALE_YEARS: ${{ github.event.inputs.sale_years }}
+        run: python sales_scraper.py
