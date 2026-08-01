@@ -1,0 +1,50 @@
+# Runs the Tucson permit scraper once a day, automatically, for free.
+#
+# Schedule: 13:00 UTC = 6:00 AM Phoenix time (Arizona has no daylight
+# saving, so this never shifts).
+#
+# You can also run it manually any time:
+#   GitHub repo > Actions tab > "Daily Tucson permit scrape" > Run workflow.
+#   Enter a number in "sample_limit" (e.g. 25) to do a small test run.
+
+name: Daily Tucson permit scrape
+
+on:
+  schedule:
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+    inputs:
+      sample_limit:
+        description: "Test mode: only process this many permits per type (leave blank for full run)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: permit-scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SAMPLE_LIMIT: ${{ github.event.inputs.sample_limit }}
+        run: python scraper.py
