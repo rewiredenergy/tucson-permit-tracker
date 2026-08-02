@@ -424,6 +424,29 @@ def supabase_get_existing() -> dict[str, str]:
         offset += chunk
 
 
+def _supabase_post_with_retry(url: str, headers: dict, batch: list[dict],
+                               what: str, max_attempts: int = 5) -> None:
+    """POST one batch to Supabase, retrying on transient network errors
+    (timeouts, dropped connections) so a brief network blip during a
+    multi-hour run doesn't lose everything since the last flush()."""
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = session.post(url, headers=headers, data=json.dumps(batch), timeout=120)
+            if resp.status_code >= 300:
+                raise RuntimeError(f"Supabase {what} failed "
+                                   f"({resp.status_code}): {resp.text[:300]}")
+            return
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout) as e:
+            last_err = e
+            wait = 5 * attempt
+            print(f"  Supabase {what} network error (attempt {attempt}/"
+                  f"{max_attempts}): {e} — retrying in {wait}s")
+            time.sleep(wait)
+    raise RuntimeError(f"Supabase {what} failed after {max_attempts} attempts: {last_err}")
+
+
 def supabase_upsert(rows: list[dict]) -> None:
     if not rows:
         return
@@ -433,10 +456,7 @@ def supabase_upsert(rows: list[dict]) -> None:
                "Prefer": "resolution=merge-duplicates,return=minimal"}
     for i in range(0, len(rows), 500):
         batch = rows[i:i + 500]
-        resp = session.post(url, headers=headers, data=json.dumps(batch), timeout=120)
-        if resp.status_code >= 300:
-            raise RuntimeError(f"Supabase upsert failed "
-                               f"({resp.status_code}): {resp.text[:300]}")
+        _supabase_post_with_retry(url, headers, batch, "upsert")
 
 
 def supabase_insert_events(events: list[dict]) -> None:
@@ -446,10 +466,7 @@ def supabase_insert_events(events: list[dict]) -> None:
     headers = {**SUPABASE_HEADERS, "Prefer": "return=minimal"}
     for i in range(0, len(events), 500):
         batch = events[i:i + 500]
-        resp = session.post(url, headers=headers, data=json.dumps(batch), timeout=120)
-        if resp.status_code >= 300:
-            raise RuntimeError(f"Supabase event insert failed "
-                               f"({resp.status_code}): {resp.text[:300]}")
+        _supabase_post_with_retry(url, headers, batch, "event insert")
 
 
 # ---------------------------------------------------------------
