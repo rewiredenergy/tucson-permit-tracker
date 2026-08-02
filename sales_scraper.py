@@ -36,8 +36,11 @@ HEADERS = {
     "Accept": "application/json",
 }
 
-REQUEST_DELAY = 0.35
+REQUEST_DELAY = 1.0
 MAX_RETRIES = 4
+RATE_LIMIT_COOLDOWN = 45     # seconds to back off after a 429 before retrying
+MAX_CONSECUTIVE_429S = 8     # after this many 429s in a row, take one long pause
+CIRCUIT_BREAKER_COOLDOWN = 300
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
@@ -90,8 +93,14 @@ def get_current_taxyear() -> int:
         return datetime.now(timezone.utc).year + 1
 
 
+# Tracks consecutive HTTP 429s across calls so we can tell "one flaky
+# request" apart from "the county's site is throttling this whole run."
+_consecutive_429s = 0
+
+
 def fetch_parcel_detail(parcel: str, taxyear: int) -> dict | None:
     """Owner name, addresses, and home characteristics for one parcel."""
+    global _consecutive_429s
     last_err = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -103,12 +112,25 @@ def fetch_parcel_detail(parcel: str, taxyear: int) -> dict | None:
             if r.status_code == 200:
                 d = r.json()
                 if isinstance(d, dict) and "Mailing" in d:
+                    _consecutive_429s = 0
                     return d
                 raise RuntimeError(f"unexpected response: {str(d)[:100]}")
+            if r.status_code == 429:
+                _consecutive_429s += 1
+                if _consecutive_429s >= MAX_CONSECUTIVE_429S:
+                    print(f"  rate limited {_consecutive_429s}x in a row — "
+                          f"cooling down {CIRCUIT_BREAKER_COOLDOWN}s so the "
+                          f"county's site stops throttling us")
+                    time.sleep(CIRCUIT_BREAKER_COOLDOWN)
+                    _consecutive_429s = 0
+                else:
+                    time.sleep(RATE_LIMIT_COOLDOWN)
+                raise RuntimeError("HTTP 429 (rate limited)")
             raise RuntimeError(f"HTTP {r.status_code}")
         except Exception as e:  # noqa: BLE001
             last_err = e
-            time.sleep(3 * attempt)
+            if "429" not in str(e):
+                time.sleep(3 * attempt)
     print(f"  warning: parcel detail failed for {parcel}: {last_err}")
     return None
 
@@ -251,6 +273,19 @@ def main() -> None:
     print(f"Assessor tax year: {taxyear}")
 
     new_rows, events = [], []
+    total_written = 0
+
+    def flush():
+        nonlocal new_rows, events, total_written
+        if not new_rows:
+            return
+        upsert("property_sales", new_rows, on_conflict="sale_key")
+        upsert("property_sale_events", events)
+        total_written += len(new_rows)
+        print(f"  saved batch of {len(new_rows)} to Supabase "
+              f"({total_written} total so far)")
+        new_rows, events = [], []
+
     for year in SALE_YEARS:
         print(f"Downloading sales file for {year}...")
         sales = download_sales_csv(year)
@@ -282,11 +317,11 @@ def main() -> None:
             })
             if i % 100 == 0:
                 print(f"  enriched {i}/{len(fresh)}")
+            if len(new_rows) >= 250:
+                flush()
 
-    print(f"Total new sales: {len(new_rows)}")
-    print("Writing to Supabase...")
-    upsert("property_sales", new_rows, on_conflict="sale_key")
-    upsert("property_sale_events", events)
+    flush()
+    print(f"Total new sales written: {total_written}")
     print("Done.")
 
 
