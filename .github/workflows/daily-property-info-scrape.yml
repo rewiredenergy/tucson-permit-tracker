@@ -1,0 +1,55 @@
+# Runs the Property Info Tracker (Pima County parcel enrichment) once a
+# day. This is a full-county sweep of ~300k+ residential parcels -- one
+# run only gets through a slice of it (time-boxed by MAX_RUNTIME_MINUTES),
+# picking up where the previous run left off. Parcels already seen by the
+# permit/sales trackers are enriched first.
+#
+# 14:30 UTC = 7:30 AM Phoenix time (after the permit scrape at 6:00 AM
+# and the sales scrape at 6:30 AM).
+
+name: Daily property info scrape
+
+on:
+  schedule:
+    - cron: "30 14 * * *"
+  workflow_dispatch:
+    inputs:
+      sample_limit:
+        description: "Test mode: only enrich this many parcels (leave blank for a full time-boxed run)"
+        required: false
+        default: ""
+      max_runtime_minutes:
+        description: "Runtime budget in minutes (leave blank for default 320)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: property-info-scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run property info scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SAMPLE_LIMIT: ${{ github.event.inputs.sample_limit }}
+          MAX_RUNTIME_MINUTES: ${{ github.event.inputs.max_runtime_minutes }}
+        run: python property_info_tracker.py
