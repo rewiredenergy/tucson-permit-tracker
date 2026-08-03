@@ -57,4 +57,5 @@ jobs:
           SAMPLE_LIMIT: ${{ github.event.inputs.sample_limit }}
           MAX_RUNTIME_MINUTES: ${{ github.event.inputs.max_runtime_minutes }}
           SKIP_SEED: ${{ github.event.inputs.skip_seed }}
+          PYTHONUNBUFFERED: "1"
         run: python property_info_tracker.py
