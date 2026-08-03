@@ -75,6 +75,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 SAMPLE_LIMIT = int(os.environ.get("SAMPLE_LIMIT") or 0)
 MAX_RUNTIME_MINUTES = float(os.environ.get("MAX_RUNTIME_MINUTES") or 320)
+SKIP_SEED = (os.environ.get("SKIP_SEED") or "").strip().lower() in ("1", "true", "yes")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     sys.exit("ERROR: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set.")
@@ -509,8 +510,11 @@ def main() -> None:
           + (f" — TEST MODE, sample limit {SAMPLE_LIMIT}" if SAMPLE_LIMIT else "")
           + f" — runtime budget {MAX_RUNTIME_MINUTES} min")
 
-    seed_parcel_roster()
-    tag_priority_parcels()
+    if SKIP_SEED:
+        print("SKIP_SEED set — skipping roster seed and priority tagging.")
+    else:
+        seed_parcel_roster()
+        tag_priority_parcels()
 
     taxyear = get_current_taxyear()
     print(f"Assessor tax year: {taxyear}")
