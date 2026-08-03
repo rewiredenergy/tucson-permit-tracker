@@ -250,11 +250,25 @@ def upsert(table: str, rows: list[dict], on_conflict: str | None = None) -> None
         url += f"?on_conflict={on_conflict}"
         headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
     for i in range(0, len(rows), 500):
-        r = session.post(url, headers=headers,
-                         data=json.dumps(rows[i:i + 500]), timeout=120)
-        if r.status_code >= 300:
-            raise RuntimeError(f"Supabase write to {table} failed "
-                               f"({r.status_code}): {r.text[:300]}")
+        batch = rows[i:i + 500]
+        last_err = None
+        for attempt in range(1, 6):
+            try:
+                r = session.post(url, headers=headers, data=json.dumps(batch), timeout=120)
+                if r.status_code >= 300:
+                    raise RuntimeError(f"Supabase write to {table} failed "
+                                       f"({r.status_code}): {r.text[:300]}")
+                last_err = None
+                break
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout) as e:
+                last_err = e
+                wait = 5 * attempt
+                print(f"  Supabase write to {table} network error "
+                      f"(attempt {attempt}/5): {e} — retrying in {wait}s")
+                time.sleep(wait)
+        if last_err is not None:
+            raise RuntimeError(f"Supabase write to {table} failed after 5 attempts: {last_err}")
 
 
 # ---------------------------------------------------------------
