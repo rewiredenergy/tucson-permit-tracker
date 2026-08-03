@@ -537,7 +537,7 @@ def main() -> None:
         if elapsed_min >= MAX_RUNTIME_MINUTES:
             print(f"Reached runtime budget ({MAX_RUNTIME_MINUTES} min) — stopping for this run.")
             break
-        if SAMPLE_LIMIT and processed >= SAMPLE_LIMIT:
+        if SAMPLE_LIMIT and (processed + len(buffer)) >= SAMPLE_LIMIT:
             break
 
         batch = get_queue_batch(QUEUE_BATCH_SIZE)
