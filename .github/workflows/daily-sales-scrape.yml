@@ -2,6 +2,11 @@
 # 13:30 UTC = 6:30 AM Phoenix time (after the Assessor's nightly
 # file regenerates around 12:20 AM, and offset from the permit
 # scrape at 6:00 AM).
+#
+# Time-boxed by MAX_RUNTIME_MINUTES -- a run that hits a large backlog
+# (e.g. an initial backfill) stops itself gracefully before the job
+# timeout and resumes automatically on the next scheduled run, since
+# already-saved sales are skipped on the next pass.
 
 name: Daily Pima homeowner scrape
 
@@ -16,6 +21,10 @@ on:
         default: ""
       sale_years:
         description: "Years to pull, comma-separated (blank = current year)"
+        required: false
+        default: ""
+      max_runtime_minutes:
+        description: "Runtime budget in minutes (leave blank for default 320)"
         required: false
         default: ""
 
@@ -48,4 +57,6 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SAMPLE_LIMIT: ${{ github.event.inputs.sample_limit }}
           SALE_YEARS: ${{ github.event.inputs.sale_years }}
+          MAX_RUNTIME_MINUTES: ${{ github.event.inputs.max_runtime_minutes }}
+          PYTHONUNBUFFERED: "1"
         run: python sales_scraper.py
