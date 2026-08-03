@@ -13,6 +13,15 @@ Environment variables (GitHub Secrets — never hard-coded):
   SAMPLE_LIMIT               optional; e.g. "25" for a small test run
   SALE_YEARS                 optional; e.g. "2024,2025,2026" to backfill
                              more years (default: current year only)
+  MAX_RUNTIME_MINUTES        optional; default 320. The script stops
+                             itself gracefully (flushing whatever's
+                             buffered) once this budget is reached,
+                             rather than getting killed mid-request by
+                             the GitHub Actions job timeout. Already-
+                             processed sales are skipped on the next
+                             run (existing sale_keys are loaded up
+                             front), so a large backlog finishes
+                             automatically over several scheduled runs.
 """
 
 import csv
@@ -48,6 +57,7 @@ SAMPLE_LIMIT = int(os.environ.get("SAMPLE_LIMIT") or 0)
 SALE_YEARS = [y.strip() for y in
               (os.environ.get("SALE_YEARS") or str(datetime.now(timezone.utc).year)).split(",")
               if y.strip()]
+MAX_RUNTIME_MINUTES = float(os.environ.get("MAX_RUNTIME_MINUTES") or 320)
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     sys.exit("ERROR: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set.")
@@ -277,7 +287,8 @@ def upsert(table: str, rows: list[dict], on_conflict: str | None = None) -> None
 def main() -> None:
     now_iso = datetime.now(timezone.utc).isoformat()
     print(f"Run started {now_iso}"
-          + (f" — TEST MODE, sample limit {SAMPLE_LIMIT}" if SAMPLE_LIMIT else ""))
+          + (f" — TEST MODE, sample limit {SAMPLE_LIMIT}" if SAMPLE_LIMIT else "")
+          + f" — runtime budget {MAX_RUNTIME_MINUTES} min")
 
     print("Loading known sales from Supabase...")
     existing = get_existing_sale_keys()
@@ -288,6 +299,11 @@ def main() -> None:
 
     new_rows, events = [], []
     total_written = 0
+    start = time.monotonic()
+    budget_hit = False
+
+    def over_budget() -> bool:
+        return (time.monotonic() - start) / 60 >= MAX_RUNTIME_MINUTES
 
     def flush():
         nonlocal new_rows, events, total_written
@@ -301,6 +317,13 @@ def main() -> None:
         new_rows, events = [], []
 
     for year in SALE_YEARS:
+        if budget_hit:
+            break
+        if over_budget():
+            print(f"Reached runtime budget ({MAX_RUNTIME_MINUTES} min) — stopping "
+                  f"before starting {year}. Tomorrow's scheduled run will pick up "
+                  f"where this left off.")
+            break
         print(f"Downloading sales file for {year}...")
         sales = download_sales_csv(year)
         fresh = []
@@ -316,6 +339,13 @@ def main() -> None:
         print(f"  {len(fresh)} new sales to process")
 
         for i, sale in enumerate(fresh, 1):
+            if over_budget():
+                print(f"Reached runtime budget ({MAX_RUNTIME_MINUTES} min) — stopping "
+                      f"mid-{year} after {i - 1}/{len(fresh)} processed this run. "
+                      f"Tomorrow's scheduled run will resume automatically (already-"
+                      f"saved sales are skipped).")
+                budget_hit = True
+                break
             detail = fetch_parcel_detail(sale["Parcel"].strip(), taxyear)
             row = build_row(sale, detail, now_iso)
             new_rows.append(row)
@@ -336,7 +366,9 @@ def main() -> None:
 
     flush()
     print(f"Total new sales written: {total_written}")
-    print("Done.")
+    print("Done." if not budget_hit else
+          "Done for this run — more remain and will resume automatically on the "
+          "next scheduled run.")
 
 
 if __name__ == "__main__":
