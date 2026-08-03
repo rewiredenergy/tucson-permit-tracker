@@ -22,6 +22,10 @@ on:
         description: "Runtime budget in minutes (leave blank for default 320)"
         required: false
         default: ""
+      skip_seed:
+        description: "Skip the full-roster reseed + priority tagging (faster re-tests; leave blank for normal runs)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -52,4 +56,5 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SAMPLE_LIMIT: ${{ github.event.inputs.sample_limit }}
           MAX_RUNTIME_MINUTES: ${{ github.event.inputs.max_runtime_minutes }}
+          SKIP_SEED: ${{ github.event.inputs.skip_seed }}
         run: python property_info_tracker.py
