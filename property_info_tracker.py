@@ -469,6 +469,44 @@ def get_queue_batch(limit: int) -> list:
 # ---------------------------------------------------------------
 # Row building
 # ---------------------------------------------------------------
+
+# Every column the enrichment loop might set, EXCLUDING "parcel" (always
+# present, it's the primary key) and "source_priority" (owned entirely by
+# tag_priority_parcels() -- must never be touched here, see normalize_row).
+ROW_COLUMNS = [
+    "jurisdiction", "property_address", "zip", "latitude", "longitude",
+    "owner_name", "interior_sqft", "total_rooms", "bath_fixtures",
+    "lot_size_sqft", "stories", "roof_material", "wall_material",
+    "year_built", "property_type", "parcel_use_desc",
+    "zoning", "zoning_base", "zoning_jurisdiction",
+    "assessed_full_cash_value", "limited_assessed_value", "price_per_sqft",
+    "annual_tax_amount", "tax_year",
+    "projected_annual_electricity_bill", "electricity_estimate_basis",
+    "status", "error_note", "raw", "enriched_at", "updated_at",
+]
+
+
+def normalize_row(row: dict) -> dict:
+    """Pad a row (whether it's a bare error row, a not_residential row, or
+    a full enriched row with/without zoning) out to an identical column
+    set. PostgREST's bulk upsert rejects a batch whose objects don't all
+    have EXACTLY the same keys (PGRST102 "All object keys must match") --
+    without this, a single enrichment failure landing in the same flush()
+    batch as normal rows crashes the whole run and discards that batch's
+    progress (confirmed in production: scheduled run #4 crashed this way
+    on parcel 10601023D). jurisdiction defaults to "pima_county" rather
+    than None since the column is NOT NULL. source_priority is
+    deliberately left out of ROW_COLUMNS -- it's set once by
+    tag_priority_parcels() and merge-duplicates would null it out here
+    otherwise, silently dropping a parcel from the priority queue.
+    """
+    out = {"parcel": row["parcel"], "jurisdiction": row.get("jurisdiction") or "pima_county"}
+    for col in ROW_COLUMNS:
+        if col != "jurisdiction":
+            out[col] = row.get(col)
+    return out
+
+
 def _situs_address(situs: dict) -> str:
     addr = " ".join(str(situs.get(k) or "").strip() for k in
                     ("StreetNumber", "StreetDirection", "StreetName")).strip()
@@ -564,7 +602,7 @@ def main() -> None:
         nonlocal buffer, processed
         if not buffer:
             return
-        upsert("property_info", buffer, on_conflict="parcel")
+        upsert("property_info", [normalize_row(r) for r in buffer], on_conflict="parcel")
         processed += len(buffer)
         print(f"  saved batch of {len(buffer)} ({processed} total this run)")
         buffer = []
