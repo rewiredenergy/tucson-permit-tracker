@@ -69,7 +69,9 @@ CIRCUIT_BREAKER_COOLDOWN = 300
 
 ROSTER_PAGE_SIZE = 2000
 QUEUE_BATCH_SIZE = 50
-FLUSH_EVERY = 100
+# Each fetched queue batch is flushed to Supabase before the next batch is
+# pulled (see the flush-cadence comment in main()) -- there is no separate
+# "flush every N rows" threshold anymore.
 # The full county roster is ~448k parcels. Once at least this many rows
 # are on file, treat the roster as already seeded and skip re-seeding on
 # future runs automatically -- see roster_seed_needed(). This matters
@@ -602,9 +604,17 @@ def main() -> None:
         nonlocal buffer, processed
         if not buffer:
             return
-        upsert("property_info", [normalize_row(r) for r in buffer], on_conflict="parcel")
-        processed += len(buffer)
-        print(f"  saved batch of {len(buffer)} ({processed} total this run)")
+        # Defensive de-dup, keeping the LAST row seen per parcel (a later
+        # result supersedes an earlier one within the same run). Postgres
+        # rejects an upsert batch that contains the same conflict key
+        # (parcel) twice: "ON CONFLICT DO UPDATE command cannot affect
+        # row a second time". See the flush-cadence comment below for why
+        # duplicates could occur; this is a second, independent layer of
+        # protection against that same failure mode.
+        deduped = list({row["parcel"]: row for row in buffer}.values())
+        upsert("property_info", [normalize_row(r) for r in deduped], on_conflict="parcel")
+        processed += len(deduped)
+        print(f"  saved batch of {len(deduped)} ({processed} total this run)")
         buffer = []
 
     while True:
@@ -652,8 +662,21 @@ def main() -> None:
                     "parcel": parcel, "status": "error",
                     "error_note": str(e)[:300], "updated_at": now_iso,
                 })
-            if len(buffer) >= FLUSH_EVERY:
-                flush()
+
+        # Flush after every fetched batch, not just once the buffer grows
+        # past some size target. This is required for correctness, not
+        # just cadence: get_queue_batch() selects status='pending' rows
+        # with no offset or exclusion list, so a parcel's status only
+        # changes once it's actually flushed. With QUEUE_BATCH_SIZE (50)
+        # smaller than the old FLUSH_EVERY threshold (100), two batches
+        # could be pulled back-to-back before either was written -- the
+        # second pull would then return the same still-pending parcels as
+        # the first. That produced a real crash: two copies of the same
+        # parcel landing in one upsert makes Postgres reject the whole
+        # batch ("ON CONFLICT DO UPDATE command cannot affect row a
+        # second time" -- confirmed in production, run #5). Flushing
+        # every batch closes that window.
+        flush()
 
     flush()
     print(f"Done. Enriched {processed} parcels this run.")
