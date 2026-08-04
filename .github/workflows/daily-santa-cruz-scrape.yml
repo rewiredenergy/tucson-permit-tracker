@@ -1,0 +1,57 @@
+# Runs the Santa Cruz County Property Tracker once a day. Unlike the
+# Pima County property-info scrape, this is NOT a slow per-parcel sweep
+# -- it's a couple of bulk paginated pulls from the county's public
+# ArcGIS FeatureServer (~43k parcels, ~27k buildings), so a normal run
+# finishes in a few minutes and re-syncs the whole county every time.
+#
+# 15:00 UTC = 8:00 AM Phoenix time (after the permit scrape at 6:00 AM,
+# the sales scrape at 6:30 AM, and the Pima property-info scrape at
+# 7:30 AM).
+
+name: Daily Santa Cruz County property scrape
+
+on:
+  schedule:
+    - cron: "0 15 * * *"
+  workflow_dispatch:
+    inputs:
+      sample_limit:
+        description: "Test mode: only upsert this many parcels (leave blank for a full run)"
+        required: false
+        default: ""
+      max_runtime_minutes:
+        description: "Runtime budget in minutes (leave blank for default 60)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: santa-cruz-property-scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Santa Cruz County property scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SAMPLE_LIMIT: ${{ github.event.inputs.sample_limit }}
+          MAX_RUNTIME_MINUTES: ${{ github.event.inputs.max_runtime_minutes }}
+          PYTHONUNBUFFERED: "1"
+        run: python santa_cruz_property_tracker.py
