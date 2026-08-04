@@ -70,6 +70,16 @@ CIRCUIT_BREAKER_COOLDOWN = 300
 ROSTER_PAGE_SIZE = 2000
 QUEUE_BATCH_SIZE = 50
 FLUSH_EVERY = 100
+# The full county roster is ~448k parcels. Once at least this many rows
+# are on file, treat the roster as already seeded and skip re-seeding on
+# future runs automatically -- see roster_seed_needed(). This matters
+# because SKIP_SEED (the manual override below) is a workflow_dispatch-
+# only input: a `schedule`-triggered run can never set it, so without
+# this auto-detection every single daily run would re-walk and re-upsert
+# all ~448k rows before doing one parcel of real enrichment -- confirmed
+# in practice to take multiple hours (a real run sat for 3h52m with no
+# visible progress and had to be manually cancelled).
+ROSTER_SEED_COMPLETE_THRESHOLD = 400000
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
@@ -343,6 +353,25 @@ def get_distinct_parcels(table: str, column: str) -> list:
         offset += chunk
 
 
+def roster_seed_needed() -> bool:
+    """False once the roster already has close to the full county's worth
+    of parcels on file -- see ROSTER_SEED_COMPLETE_THRESHOLD. A single
+    fast exact-count request (no rows fetched), not a full table scan.
+    Fails safe: any error re-seeds rather than silently skipping forever."""
+    try:
+        r = session.get(
+            f"{SUPABASE_URL}/rest/v1/property_info?select=parcel&limit=1",
+            headers={**SUPABASE_HEADERS, "Prefer": "count=exact"},
+            timeout=30,
+        )
+        r.raise_for_status()
+        total = int(r.headers.get("Content-Range", "*/0").split("/")[-1])
+        return total < ROSTER_SEED_COMPLETE_THRESHOLD
+    except Exception as e:  # noqa: BLE001
+        print(f"  couldn't check current roster size ({e}) — seeding to be safe")
+        return True
+
+
 # ---------------------------------------------------------------
 # Roster seeding -- bulk pull of every parcel in the county from the
 # public GIS layer. Cheap (no per-parcel rate limiting -- it's a
@@ -512,8 +541,16 @@ def main() -> None:
 
     if SKIP_SEED:
         print("SKIP_SEED set — skipping roster seed and priority tagging.")
-    else:
+    elif roster_seed_needed():
         seed_parcel_roster()
+        tag_priority_parcels()
+    else:
+        # Roster's already essentially complete -- skip the expensive full
+        # reseed (see ROSTER_SEED_COMPLETE_THRESHOLD), but still re-tag any
+        # parcels the sales/permit scrapers have newly picked up since the
+        # last run, so freshly-tracked homes keep jumping the queue.
+        print("Roster already has ≥" + f"{ROSTER_SEED_COMPLETE_THRESHOLD:,}"
+              + " parcels on file — skipping the full reseed.")
         tag_priority_parcels()
 
     taxyear = get_current_taxyear()
