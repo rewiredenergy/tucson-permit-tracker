@@ -22,8 +22,8 @@ on:
     - cron: "30 2 * * *"
   workflow_dispatch:
     inputs:
-        sample_limit:
-          description: "Test mode: only enrich this many parcels (leave blank for a full time-boxed run)"
+      sample_limit:
+        description: "Test mode: only enrich this many parcels (leave blank for a full time-boxed run)"
         required: false
         default: ""
       max_runtime_minutes:
@@ -34,7 +34,6 @@ on:
         description: "Skip the full-roster reseed + priority tagging (faster re-tests; leave blank for normal runs)"
         required: false
         default: ""
-
 permissions:
   contents: read
 
