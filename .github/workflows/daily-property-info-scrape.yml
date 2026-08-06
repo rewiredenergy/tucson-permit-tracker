@@ -1,17 +1,25 @@
-# Runs the Property Info Tracker (Pima County parcel enrichment) once a
-# day. This is a full-county sweep of ~300k+ residential parcels -- one
-# run only gets through a slice of it (time-boxed by MAX_RUNTIME_MINUTES),
-# picking up where the previous run left off. Parcels already seen by the
-# permit/sales trackers are enriched first.
+# Runs the Property Info Tracker (Pima County parcel enrichment). This is a
+# full-county sweep of ~448k parcels -- one run only gets through a slice of
+# it (time-boxed by MAX_RUNTIME_MINUTES), picking up where the previous run
+# left off. Parcels already seen by the permit/sales trackers are enriched
+# first.
 #
-# 14:30 UTC = 7:30 AM Phoenix time (after the permit scrape at 6:00 AM
-# and the sales scrape at 6:30 AM).
+# TEMPORARILY running TWICE a day (~7am and ~7pm Phoenix time) to clear the
+# large one-time county-sweep backlog faster. Once the backlog is cleared
+# (pending count for the general county sweep, source_priority IS NULL,
+# reaches ~0), drop the second cron entry below and go back to once a day --
+# daily new permits/sales are a trivial trickle once the backlog is gone.
+#
+# 14:30 UTC = 7:30 AM Phoenix time (after the permit scrape at 6:00 AM and
+# the sales scrape at 6:30 AM). 02:30 UTC = 7:30 PM Phoenix time (clear of
+# every other tracker's schedule).
 
 name: Daily property info scrape
 
 on:
   schedule:
     - cron: "30 14 * * *"
+        - cron: "30 2 * * *"
   workflow_dispatch:
     inputs:
       sample_limit:
