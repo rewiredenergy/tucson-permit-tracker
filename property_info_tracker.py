@@ -449,21 +449,44 @@ def tag_priority_parcels() -> None:
                 print(f"  warning: tagging batch failed ({label}): {e}")
 
 
+def get_with_retry(url: str, timeout: int = 60):
+    """GET with the same attempt/backoff pattern as upsert()/patch_with_retry(),
+    extended to also retry transient 5xx errors -- get_queue_batch() used to
+    call session.get(...).raise_for_status() with no retry at all, so a single
+    transient Supabase 500 crashed the whole run instead of just retrying
+    (confirmed in production: a scheduled run died after only 1,000 rows this
+    way). 4xx errors are not retried -- retrying those would just get the
+    same error back."""
+    last_err = None
+    for attempt in range(1, 6):
+        try:
+            r = session.get(url, headers=SUPABASE_HEADERS, timeout=timeout)
+            if r.status_code >= 500:
+                raise RuntimeError(f"Supabase GET failed ({r.status_code}): {r.text[:300]}")
+            r.raise_for_status()
+            return r
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout, RuntimeError) as e:
+            last_err = e
+            wait = 5 * attempt
+            print(f"  Supabase read error (attempt {attempt}/5): {e} — retrying in {wait}s")
+            time.sleep(wait)
+    raise RuntimeError(f"Supabase GET failed after 5 attempts: {last_err}")
+
+
 def get_queue_batch(limit: int) -> list:
     rows = []
     url = (f"{SUPABASE_URL}/rest/v1/property_info"
            f"?status=eq.pending&source_priority=not.is.null"
            f"&select=parcel,property_address,zip,latitude,longitude&limit={limit}")
-    r = session.get(url, headers=SUPABASE_HEADERS, timeout=60)
-    r.raise_for_status()
+    r = get_with_retry(url)
     rows += r.json()
     if len(rows) < limit:
         remaining = limit - len(rows)
         url2 = (f"{SUPABASE_URL}/rest/v1/property_info"
                 f"?status=eq.pending&source_priority=is.null"
                 f"&select=parcel,property_address,zip,latitude,longitude&limit={remaining}")
-        r2 = session.get(url2, headers=SUPABASE_HEADERS, timeout=60)
-        r2.raise_for_status()
+        r2 = get_with_retry(url2)
         rows += r2.json()
     return rows
 
