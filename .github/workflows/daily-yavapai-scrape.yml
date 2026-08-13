@@ -6,12 +6,17 @@
 #
 # 16:30 UTC = 9:30 AM Phoenix time (after the Pinal scrape at 9:00 AM).
 # Arizona does not observe DST, so Phoenix is always UTC-7.
+#
+# SCHEDULE DISABLED (2026-08-13): gis.yavapaiaz.gov's WAF blocks GitHub
+# Actions runner IPs with a 403 on every request, confirmed even with
+# realistic browser headers and curl_cffi Chrome-TLS impersonation --
+# see the NOTE in yavapai_property_tracker.py and COUNTIES.md. Re-enable
+# the `schedule:` trigger once a working fetch path is found. Left as
+# workflow_dispatch-only so it can still be re-tested manually.
 
 name: Daily Yavapai County property scrape
 
 on:
-  schedule:
-    - cron: "30 16 * * *"
   workflow_dispatch:
     inputs:
       sample_limit:
