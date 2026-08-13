@@ -22,11 +22,11 @@ it's the map for "what's done, what's next" across sessions.
 | Graham     | --                                            | --                                                | --                                  | Not started |
 | Greenlee   | --                                            | --                                                | --                                  | Not started |
 | La Paz     | --                                            | --                                                | --                                  | Not started |
-| Mohave     | --                                            | --                                                | --                                  | Not started |
+| Mohave     | Countywide property/owner info              | `mohave_property_info`, `mohave_scrape_state`  | `mohave_property_tracker.py`       | Live (daily 10:30am), ~267,046 parcels, resumable checkpoint, has both market + taxable valuation and sale history + lat/lon |
 | Navajo     | --                                            | --                                                | --                                  | Not started |
 | Yuma       | Countywide property/owner info              | `yuma_property_info`                           | `yuma_property_tracker.py`         | Live (daily 10:00am), ~70,112 parcels, has valuation + sale history + lat/lon |
 
-Suggested next target: **Mohave** (next-highest population of the
+Suggested next target: **Coconino** (next-highest population of the
 remaining counties).
 
 **Anon-RLS-gap resolved for Maricopa/Santa Cruz/Pinal (2026-08-13):** those
