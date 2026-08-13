@@ -24,11 +24,10 @@ it's the map for "what's done, what's next" across sessions.
 | La Paz     | --                                            | --                                                | --                                  | Not started |
 | Mohave     | --                                            | --                                                | --                                  | Not started |
 | Navajo     | --                                            | --                                                | --                                  | Not started |
-| Yuma       | --                                            | --                                                | --                                  | Not started |
+| Yuma       | Countywide property/owner info              | `yuma_property_info`                           | `yuma_property_tracker.py`         | Live (daily 10:00am), ~70,112 parcels, has valuation + sale history + lat/lon |
 
-Suggested next target: **Yuma** (next-highest population of the remaining
-counties, so likely has a modern GIS/Assessor portal and the most
-subscriber value).
+Suggested next target: **Mohave** (next-highest population of the
+remaining counties).
 
 **Anon-RLS-gap resolved for Maricopa/Santa Cruz/Pinal (2026-08-13):** those
 three tables only granted SELECT to the `authenticated` role at first, but
