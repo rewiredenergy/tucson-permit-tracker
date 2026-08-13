@@ -1,0 +1,60 @@
+# Runs the Pinal County Property Tracker once a day. Pinal is the
+# third-largest county in this repo (~287k parcels -- bigger than
+# Santa Cruz's ~43k, smaller than Maricopa's ~1.76M), pulled from a
+# single public bulk ArcGIS FeatureServer layer in pages of 2000. A
+# full sweep may take more than one run -- progress is checkpointed in
+# the pinal_scrape_state table, so each run just continues from where
+# the last one left off.
+#
+# 16:00 UTC = 9:00 AM Phoenix time (after the permit scrape at 6:00 AM,
+# sales scrape at 6:30 AM, Pima property-info scrape at 7:30 AM, Santa
+# Cruz scrape at 8:00 AM, and Maricopa scrape at 8:30 AM). Arizona does
+# not observe DST, so Phoenix is always UTC-7.
+
+name: Daily Pinal County property scrape
+
+on:
+  schedule:
+    - cron: "0 16 * * *"
+  workflow_dispatch:
+    inputs:
+      sample_limit:
+        description: "Test mode: only upsert this many parcels (leave blank for a full time-boxed run)"
+        required: false
+        default: ""
+      max_runtime_minutes:
+        description: "Runtime budget in minutes (leave blank for default 55)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pinal-property-scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Pinal County property scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SAMPLE_LIMIT: ${{ github.event.inputs.sample_limit }}
+          MAX_RUNTIME_MINUTES: ${{ github.event.inputs.max_runtime_minutes }}
+          PYTHONUNBUFFERED: "1"
+        run: python pinal_property_tracker.py
