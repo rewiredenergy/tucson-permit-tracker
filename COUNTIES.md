@@ -14,6 +14,7 @@ it's the map for "what's done, what's next" across sessions.
 | Santa Cruz | Countywide property/owner info              | `santa_cruz_property_info`                     | `santa_cruz_property_tracker.py`  | Live (daily 8:00am), ~43,230 parcels |
 | Maricopa   | Countywide property/owner info              | `maricopa_property_info`, `maricopa_scrape_state` | `maricopa_property_tracker.py` | Live (daily 8:30am), ~1.76M parcels, resumable checkpoint |
 | Pinal      | Countywide property/owner info              | `pinal_property_info`, `pinal_scrape_state`    | `pinal_property_tracker.py`       | Live (daily 9:00am), ~287k parcels, resumable checkpoint |
+| Yavapai    | Countywide property/owner info              | `yavapai_property_info`                        | `yavapai_property_tracker.py`     | Live (daily 9:30am), ~188k parcels, no valuation/year-built/sqft data available |
 | Apache     | --                                            | --                                                | --                                  | Not started |
 | Cochise    | --                                            | --                                                | --                                  | Not started |
 | Coconino   | --                                            | --                                                | --                                  | Not started |
@@ -23,24 +24,30 @@ it's the map for "what's done, what's next" across sessions.
 | La Paz     | --                                            | --                                                | --                                  | Not started |
 | Mohave     | --                                            | --                                                | --                                  | Not started |
 | Navajo     | --                                            | --                                                | --                                  | Not started |
-| Yavapai    | --                                            | --                                                | --                                  | Not started |
 | Yuma       | --                                            | --                                                | --                                  | Not started |
 
-Suggested next target: **Yavapai** (highest population of the remaining
+Suggested next target: **Yuma** (next-highest population of the remaining
 counties, so likely has a modern GIS/Assessor portal and the most
 subscriber value).
 
-**Known issue found while building Pinal (2026-08-13):** `maricopa_property_info`
-and `santa_cruz_property_info` only grant SELECT to the `authenticated` role,
-but the live Knockzy prototype reads Supabase with the `anon` key -- so
-despite both counties being fully enriched, the prototype currently can't
-display that data. `property_info` and `solar_permits` both correctly grant
-`anon` read too, which is why those work. `pinal_property_info` was built
-with the same gap (matching the existing pattern) rather than silently
-widening anon access to owner PII -- that's a real privacy decision for
-Juan to make, not routine setup. See the NOTE at the bottom of
-`supabase_pinal_property_schema.sql` for the exact policy to add to all
-three tables once decided.
+**Anon-RLS-gap resolved for Maricopa/Santa Cruz/Pinal (2026-08-13):** those
+three tables only granted SELECT to the `authenticated` role at first, but
+the live Knockzy prototype reads Supabase with the `anon` key -- so despite
+being fully enriched, the prototype couldn't display that data. Juan ran
+the `anon` grant SQL himself directly in the Supabase SQL Editor (Claude's
+own safety classifier blocks it from running anon-policy-granting SQL
+itself, even with explicit approval -- it's treated as "modifying system/
+security settings"), and it's now confirmed working end-to-end against the
+live prototype's exact query pattern for both counties.
+
+**Yavapai (and further new counties built today) deliberately deferred:**
+same gap exists for `yavapai_property_info` -- only an `authenticated` read
+policy was created during the automated build, on purpose, to avoid
+repeatedly hitting the classifier block across each new county. The `anon`
+grant SQL for Yavapai is queued up in the NOTE at the bottom of
+`supabase_yavapai_property_schema.sql`; a consolidated batch covering all
+of today's new counties will be handed to Juan once to run himself in one
+pass, rather than one interruption per county.
 
 ## The playbook (repeat this per county)
 
