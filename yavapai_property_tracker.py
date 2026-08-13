@@ -82,15 +82,23 @@ SUPABASE_HEADERS = {
 session = requests.Session()
 session.headers.update(HEADERS)
 
-# gis.yavapaiaz.gov sits behind a WAF that 403s plain `requests` traffic from
-# datacenter/cloud IPs (confirmed: GitHub Actions runners get 403 Forbidden
-# even with full browser-style headers; the same request succeeds from a
-# residential/browser IP). This is TLS-fingerprint-based bot detection, not
-# a header check -- `requests`'/urllib3's TLS handshake doesn't look like a
-# real browser's no matter what headers are set. curl_cffi's `impersonate`
-# mode replicates a real Chrome TLS fingerprint and gets through. Only the
-# ArcGIS fetch needs this; Supabase writes use the plain `requests` session
-# above as normal.
+# gis.yavapaiaz.gov sits behind a WAF that 403s every request from GitHub
+# Actions runner IPs, while the identical request succeeds from a
+# residential/browser IP. Two fixes have been tried and both still get
+# 403'd from Actions:
+#   1. Realistic browser headers (UA/Accept/Referer/Origin) on plain
+#      `requests` -- no change.
+#   2. curl_cffi with `impersonate="chrome124"` (real Chrome TLS
+#      fingerprint) -- still 403'd identically.
+# Since a real-TLS-fingerprint client is STILL blocked, this is very
+# likely IP/ASN-range blocking (GitHub Actions' datacenter IPs are
+# blocklisted outright), not fingerprint-based bot detection -- no amount
+# of header/TLS spoofing from an Actions runner will fix that. Left as
+# `arcgis_session` (rather than reverting to plain `requests`) in case a
+# future fix (e.g. a proxy, or a different runner IP range) makes the
+# distinction relevant again; today (2026-08-13) it makes no difference.
+# See COUNTIES.md for the decision to defer this county rather than keep
+# debugging it. Supabase writes use the plain `requests` session above.
 arcgis_session = cffi_requests.Session(impersonate="chrome124")
 arcgis_session.headers.update(HEADERS)
 
