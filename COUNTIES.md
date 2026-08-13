@@ -13,6 +13,7 @@ it's the map for "what's done, what's next" across sessions.
 | Pima       | Countywide property/owner info              | `property_info`                                | `property_info_tracker.py`        | Live (daily 7:30am) |
 | Santa Cruz | Countywide property/owner info              | `santa_cruz_property_info`                     | `santa_cruz_property_tracker.py`  | Live (daily 8:00am), ~43,230 parcels |
 | Maricopa   | Countywide property/owner info              | `maricopa_property_info`, `maricopa_scrape_state` | `maricopa_property_tracker.py` | Live (daily 8:30am), ~1.76M parcels, resumable checkpoint |
+| Pinal      | Countywide property/owner info              | `pinal_property_info`, `pinal_scrape_state`    | `pinal_property_tracker.py`       | Live (daily 9:00am), ~287k parcels, resumable checkpoint |
 | Apache     | --                                            | --                                                | --                                  | Not started |
 | Cochise    | --                                            | --                                                | --                                  | Not started |
 | Coconino   | --                                            | --                                                | --                                  | Not started |
@@ -22,13 +23,24 @@ it's the map for "what's done, what's next" across sessions.
 | La Paz     | --                                            | --                                                | --                                  | Not started |
 | Mohave     | --                                            | --                                                | --                                  | Not started |
 | Navajo     | --                                            | --                                                | --                                  | Not started |
-| Pinal      | --                                            | --                                                | --                                  | Not started |
 | Yavapai    | --                                            | --                                                | --                                  | Not started |
 | Yuma       | --                                            | --                                                | --                                  | Not started |
 
-Suggested next targets: **Pinal** and **Yavapai** (highest population of the
-remaining counties, so likely have modern GIS/Assessor portals and the most
+Suggested next target: **Yavapai** (highest population of the remaining
+counties, so likely has a modern GIS/Assessor portal and the most
 subscriber value).
+
+**Known issue found while building Pinal (2026-08-13):** `maricopa_property_info`
+and `santa_cruz_property_info` only grant SELECT to the `authenticated` role,
+but the live Knockzy prototype reads Supabase with the `anon` key -- so
+despite both counties being fully enriched, the prototype currently can't
+display that data. `property_info` and `solar_permits` both correctly grant
+`anon` read too, which is why those work. `pinal_property_info` was built
+with the same gap (matching the existing pattern) rather than silently
+widening anon access to owner PII -- that's a real privacy decision for
+Juan to make, not routine setup. See the NOTE at the bottom of
+`supabase_pinal_property_schema.sql` for the exact policy to add to all
+three tables once decided.
 
 ## The playbook (repeat this per county)
 
@@ -67,13 +79,19 @@ subscriber value).
      instead of always restarting from the top of the alphabet. Below
      that scale, Santa Cruz's simpler "re-pull the whole county every
      run" design is fine.
-4. **Deploy via the GitHub web editor** (no git/gh CLI in the build
-   sandbox): create each file at
-   `github.com/rewiredenergy/tucson-permit-tracker/new/main?filename=...`,
-   paste content into the CodeMirror editor, verify the line count matches
-   the local file (Ctrl+End, check the ending line number) before
-   committing -- pastes into CodeMirror can silently land partial/garbled,
-   so always verify before commit.
+4. **Deploy via the GitHub web editor.** `git clone` of this repo works
+   (it's public), but `git push` does not -- confirmed during the Pinal
+   build: the session's git proxy rejects it ("not in this session's
+   authorized repository set"), even though the same session can push
+   just fine to other repos. Don't waste time re-attempting a push;
+   clone locally only to read existing files as templates, then create
+   each new/changed file at
+   `github.com/rewiredenergy/tucson-permit-tracker/new/main?filename=...`
+   (or the edit URL for existing files), paste content into the
+   CodeMirror editor, verify the line count matches the local file
+   (Ctrl+End, check the ending line number) before committing -- pastes
+   into CodeMirror can silently land partial/garbled, so always verify
+   before commit.
 5. **Create the Supabase tables** by pasting the schema SQL into the
    Supabase SQL Editor (Monaco) and running with Ctrl+Enter.
 6. **Add the workflow** at `.github/workflows/daily-<county>-scrape.yml`,
