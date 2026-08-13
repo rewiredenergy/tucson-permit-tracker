@@ -16,8 +16,8 @@ it's the map for "what's done, what's next" across sessions.
 | Pinal      | Countywide property/owner info              | `pinal_property_info`, `pinal_scrape_state`    | `pinal_property_tracker.py`       | Live (daily 9:00am), ~287k parcels, resumable checkpoint |
 | Yavapai    | Countywide property/owner info              | `yavapai_property_info`                        | `yavapai_property_tracker.py`     | **Blocked** -- code complete, table created, but gis.yavapaiaz.gov 403s every GitHub Actions IP (see note below); daily schedule disabled, workflow_dispatch-only until resolved |
 | Apache     | --                                            | --                                                | --                                  | Not started |
-| Cochise    | --                                            | --                                                | --                                  | Not started |
-| Coconino   | --                                            | --                                                | --                                  | Not started |
+| Cochise    | Countywide property/owner info              | `cochise_property_info`                        | `cochise_property_tracker.py`      | Live (daily 11:00am), ~122,936 parcels, no resumable checkpoint needed, has valuation (FCV only, no sale history) + lat/lon |
+| Coconino   | --                                            | --                                                | --                                  | **Deferred** -- see note below (public layer lacks owner/valuation data) |
 | Gila       | --                                            | --                                                | --                                  | Not started |
 | Graham     | --                                            | --                                                | --                                  | Not started |
 | Greenlee   | --                                            | --                                                | --                                  | Not started |
@@ -26,8 +26,8 @@ it's the map for "what's done, what's next" across sessions.
 | Navajo     | --                                            | --                                                | --                                  | Not started |
 | Yuma       | Countywide property/owner info              | `yuma_property_info`                           | `yuma_property_tracker.py`         | Live (daily 10:00am), ~70,112 parcels, has valuation + sale history + lat/lon |
 
-Suggested next target: **Coconino** (next-highest population of the
-remaining counties).
+Suggested next target: **Navajo** (Coconino, the next-highest population
+county, is deferred -- see note below; Navajo is next after that).
 
 **Anon-RLS-gap resolved for Maricopa/Santa Cruz/Pinal (2026-08-13):** those
 three tables only granted SELECT to the `authenticated` role at first, but
@@ -64,6 +64,21 @@ grant SQL for Yavapai is queued up in the NOTE at the bottom of
 `supabase_yavapai_property_schema.sql`; a consolidated batch covering all
 of today's new counties will be handed to Juan once to run himself in one
 pass, rather than one interruption per county.
+
+**Coconino deferred -- public layer strips owner/valuation data
+(2026-08-13):** Coconino's most prominent official public ArcGIS layer,
+`Coconino_County_Parcels_Public_View`, only exposes 6 fields (APN, account
+number, situs address/city, shape area/length) -- explicitly no owner name
+and no valuation, by design (its own description says "...Public View with
+limited fields"). The full owner/valuation/sale data instead lives behind
+a Tyler Technologies "EagleWeb" system (`eagleassessor.coconino.az.gov`),
+a per-parcel HTML search portal (search by name/parcel/address), not a
+bulk-queryable API -- no bulk/JSON endpoint was found. This doesn't fit the
+established bulk-pull playbook; it would need a fundamentally different,
+much slower per-parcel scraper (similar in shape to Pima's original
+enrichment approach). Skipped for now in favor of counties with a real
+bulk API, to keep progress moving -- revisit with a per-parcel EagleWeb
+scraper if Coconino coverage becomes a priority.
 
 ## The playbook (repeat this per county)
 
