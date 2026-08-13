@@ -45,6 +45,7 @@ import time
 from datetime import datetime, timezone
 
 import requests
+from curl_cffi import requests as cffi_requests
 
 FEATURE_URL = "https://gis.yavapaiaz.gov/arcgis/rest/services/Property/FeatureServer/4/query"
 
@@ -80,6 +81,18 @@ SUPABASE_HEADERS = {
 
 session = requests.Session()
 session.headers.update(HEADERS)
+
+# gis.yavapaiaz.gov sits behind a WAF that 403s plain `requests` traffic from
+# datacenter/cloud IPs (confirmed: GitHub Actions runners get 403 Forbidden
+# even with full browser-style headers; the same request succeeds from a
+# residential/browser IP). This is TLS-fingerprint-based bot detection, not
+# a header check -- `requests`'/urllib3's TLS handshake doesn't look like a
+# real browser's no matter what headers are set. curl_cffi's `impersonate`
+# mode replicates a real Chrome TLS fingerprint and gets through. Only the
+# ArcGIS fetch needs this; Supabase writes use the plain `requests` session
+# above as normal.
+arcgis_session = cffi_requests.Session(impersonate="chrome124")
+arcgis_session.headers.update(HEADERS)
 
 _start = time.monotonic()
 
@@ -142,7 +155,7 @@ def fetch_all_parcels() -> list:
         d = None
         for attempt in range(1, 4):
             try:
-                r = session.get(FEATURE_URL, params=params, timeout=60)
+                r = arcgis_session.get(FEATURE_URL, params=params, timeout=60)
                 r.raise_for_status()
                 d = r.json()
                 if "error" in d:
