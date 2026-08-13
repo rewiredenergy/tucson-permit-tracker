@@ -1,0 +1,56 @@
+# Runs the Yuma County Property Tracker once a day. Yuma has ~70k
+# parcels, pulled from a single public bulk ArcGIS MapServer layer in
+# pages of 2000. A full sweep finishes in a few minutes -- no resumable
+# checkpoint needed at this scale (same as Santa Cruz).
+#
+# 17:00 UTC = 10:00 AM Phoenix time (after the Yavapai slot at 9:30 AM,
+# which is currently workflow_dispatch-only due to a WAF block -- see
+# COUNTIES.md). Arizona does not observe DST, so Phoenix is always UTC-7.
+
+name: Daily Yuma County property scrape
+
+on:
+  schedule:
+    - cron: "0 17 * * *"
+  workflow_dispatch:
+    inputs:
+      sample_limit:
+        description: "Test mode: only upsert this many parcels (leave blank for a full run)"
+        required: false
+        default: ""
+      max_runtime_minutes:
+        description: "Runtime budget in minutes (leave blank for default 55)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yuma-property-scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Yuma County property scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SAMPLE_LIMIT: ${{ github.event.inputs.sample_limit }}
+          MAX_RUNTIME_MINUTES: ${{ github.event.inputs.max_runtime_minutes }}
+          PYTHONUNBUFFERED: "1"
+        run: python yuma_property_tracker.py
