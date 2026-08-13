@@ -14,7 +14,7 @@ it's the map for "what's done, what's next" across sessions.
 | Santa Cruz | Countywide property/owner info              | `santa_cruz_property_info`                     | `santa_cruz_property_tracker.py`  | Live (daily 8:00am), ~43,230 parcels |
 | Maricopa   | Countywide property/owner info              | `maricopa_property_info`, `maricopa_scrape_state` | `maricopa_property_tracker.py` | Live (daily 8:30am), ~1.76M parcels, resumable checkpoint |
 | Pinal      | Countywide property/owner info              | `pinal_property_info`, `pinal_scrape_state`    | `pinal_property_tracker.py`       | Live (daily 9:00am), ~287k parcels, resumable checkpoint |
-| Yavapai    | Countywide property/owner info              | `yavapai_property_info`                        | `yavapai_property_tracker.py`     | Live (daily 9:30am), ~188k parcels, no valuation/year-built/sqft data available |
+| Yavapai    | Countywide property/owner info              | `yavapai_property_info`                        | `yavapai_property_tracker.py`     | **Blocked** -- code complete, table created, but gis.yavapaiaz.gov 403s every GitHub Actions IP (see note below); daily schedule disabled, workflow_dispatch-only until resolved |
 | Apache     | --                                            | --                                                | --                                  | Not started |
 | Cochise    | --                                            | --                                                | --                                  | Not started |
 | Coconino   | --                                            | --                                                | --                                  | Not started |
@@ -39,6 +39,23 @@ own safety classifier blocks it from running anon-policy-granting SQL
 itself, even with explicit approval -- it's treated as "modifying system/
 security settings"), and it's now confirmed working end-to-end against the
 live prototype's exact query pattern for both counties.
+
+**Yavapai blocked by WAF (2026-08-13):** `gis.yavapaiaz.gov` (Yavapai's own
+GIS server, hosting the same ArcGIS FeatureServer pattern used successfully
+for every other county) returns 403 Forbidden to every request from GitHub
+Actions runner IPs, while the identical request succeeds from a normal
+browser/residential IP. Two fixes were tried and both failed identically:
+realistic browser headers, then `curl_cffi` with Chrome TLS-fingerprint
+impersonation (the standard fix for "browser works, script gets 403").
+Since even a real-TLS-fingerprint client still gets 403'd, this looks like
+IP/ASN-range blocking of datacenter IPs specifically, not fingerprint-based
+bot detection -- which no client-side spoofing from an Actions runner can
+get around. All the code/schema/workflow is deployed and ready; the daily
+`schedule:` trigger was removed from `daily-yavapai-scrape.yml` (left
+`workflow_dispatch`-only) so it doesn't fail-spam every day. Revisit if a
+proxy/different egress IP becomes available, or if Yavapai publishes the
+same data through a different (non-WAF'd) source. Moving on to Yuma per
+the "finish Arizona today" priority rather than continuing to debug this.
 
 **Yavapai (and further new counties built today) deliberately deferred:**
 same gap exists for `yavapai_property_info` -- only an `authenticated` read
