@@ -45,6 +45,7 @@ import time
 from datetime import datetime, timezone
 
 import requests
+import math
 
 FEATURE_URL = ("https://azwatermaps.azwater.gov/arcgis/rest/services/General/"
                "Parcels_for_TEST/FeatureServer/3/query")
@@ -94,9 +95,15 @@ def to_num(value):
     if s == "":
         return None
     try:
-        return float(s)
+        v = float(s)
     except ValueError:
         return None
+    # ArcGIS occasionally returns the literal string "NaN" (or "Infinity")
+    # for a degenerate/zero-area parcel's computed centroid -- float() parses
+    # those "successfully" into a non-finite value, which then breaks
+    # PostgREST's strict JSON parser downstream ("Empty or invalid json"),
+    # crashing the whole batch upsert. Reject non-finite results here instead.
+    return v if math.isfinite(v) else None
 
 
 def clean(value):
