@@ -1,0 +1,56 @@
+# Runs the Greenlee County Property Tracker once a day. Greenlee has
+# ~4.7k parcels (the smallest county in AZ), pulled from the ADWR
+# statewide fallback FeatureServer in pages of 2000. A full sweep finishes
+# in well under a minute -- no resumable checkpoint needed at this scale
+# (same as Santa Cruz/Yuma/Cochise/Navajo/Apache/Gila/Graham).
+#
+# 20:30 UTC = 1:30 PM Phoenix time (30 min after the Graham slot at 1:00
+# PM). Arizona does not observe DST, so Phoenix is always UTC-7.
+
+name: Daily Greenlee County property scrape
+
+on:
+  schedule:
+    - cron: "30 20 * * *"
+  workflow_dispatch:
+    inputs:
+      sample_limit:
+        description: "Test mode: only upsert this many parcels (leave blank for a full run)"
+        required: false
+        default: ""
+      max_runtime_minutes:
+        description: "Runtime budget in minutes (leave blank for default 55)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: greenlee-property-scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Greenlee County property scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SAMPLE_LIMIT: ${{ github.event.inputs.sample_limit }}
+          MAX_RUNTIME_MINUTES: ${{ github.event.inputs.max_runtime_minutes }}
+          PYTHONUNBUFFERED: "1"
+        run: python greenlee_property_tracker.py
