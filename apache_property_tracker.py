@@ -62,7 +62,7 @@ FEATURE_URL = ("https://services8.arcgis.com/KyZIQDOsXnGaTxj2/arcgis/rest/"
 PAGE_SIZE = 2000
 REQUEST_DELAY = 0.3  # seconds between page requests -- be polite to the server
 
-OUT_FIELDS = "PARCEL_NUM,NUMBER,OWNER,SITUS,SIZE"
+OUT_FIELDS = "OBJECTID,PARCEL_NUM,NUMBER,OWNER,SITUS,SIZE"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) RewiredApachePropertyTracker/1.0",
@@ -174,7 +174,17 @@ def normalize_row(row: dict) -> dict:
 
 
 def build_row(a: dict, now_iso: str) -> dict:
-    parcel = clean(a.get("PARCEL_NUM"))
+    # A handful of rows in this layer are essentially empty placeholder
+    # polygons with PARCEL_NUM (and every other attribute) null -- e.g.
+    # OBJECTID 143735, confirmed live. Fall back to a synthetic
+    # "apache-oid-<OBJECTID>" key so those rows still satisfy the not-null
+    # primary key instead of crashing the whole batch upsert (PostgreSQL
+    # 23502), same fallback pattern used by the ADWR-sourced counties.
+    parcel = clean(a.get("PARCEL_NUM")) or (
+        f"apache-oid-{a['OBJECTID']}" if a.get("OBJECTID") is not None else None
+    )
+    if not parcel:
+        raise ValueError("missing PARCEL_NUM and OBJECTID")
     owner_name = clean(a.get("OWNER"))
     return {
         "parcel": parcel,
@@ -259,7 +269,9 @@ def main() -> None:
             try:
                 rows.append(normalize_row(build_row(a, now_iso)))
             except Exception as e:  # noqa: BLE001
-                pid = a.get("PARCEL_NUM") or "unknown"
+                pid = a.get("PARCEL_NUM") or (
+                    f"apache-oid-{a['OBJECTID']}" if a.get("OBJECTID") is not None else "unknown"
+                )
                 print(f"  warning: row build failed for {pid}: {e}")
                 rows.append(normalize_row({
                     "parcel": pid, "status": "error",
