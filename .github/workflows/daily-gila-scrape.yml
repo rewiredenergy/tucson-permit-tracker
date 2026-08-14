@@ -1,0 +1,56 @@
+# Runs the Gila County Property Tracker once a day. Gila has ~33k parcels,
+# pulled from a single public bulk ArcGIS FeatureServer layer in pages of
+# 1000 (this layer's maxRecordCount, lower than the usual 2000). A full
+# sweep finishes in a few minutes -- no resumable checkpoint needed at this
+# scale (same as Santa Cruz/Yuma/Cochise/Navajo/Apache).
+#
+# 19:30 UTC = 12:30 PM Phoenix time (30 min after the Apache slot at
+# 12:00 PM). Arizona does not observe DST, so Phoenix is always UTC-7.
+
+name: Daily Gila County property scrape
+
+on:
+  schedule:
+    - cron: "30 19 * * *"
+  workflow_dispatch:
+    inputs:
+      sample_limit:
+        description: "Test mode: only upsert this many parcels (leave blank for a full run)"
+        required: false
+        default: ""
+      max_runtime_minutes:
+        description: "Runtime budget in minutes (leave blank for default 55)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gila-property-scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Gila County property scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SAMPLE_LIMIT: ${{ github.event.inputs.sample_limit }}
+          MAX_RUNTIME_MINUTES: ${{ github.event.inputs.max_runtime_minutes }}
+          PYTHONUNBUFFERED: "1"
+        run: python gila_property_tracker.py
