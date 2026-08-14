@@ -43,6 +43,7 @@ import time
 from datetime import datetime, timezone
 
 import requests
+import math
 
 FEATURE_URL = "https://gis.ci.yuma.az.us/server/rest/services/pan/Parcels/MapServer/0/query"
 
@@ -87,9 +88,15 @@ _start = time.monotonic()
 # ---------------------------------------------------------------
 def to_num(value):
     try:
-        return float(value) if value not in (None, "") else None
+        v = float(value) if value not in (None, "") else None
     except (ValueError, TypeError):
         return None
+    # ArcGIS occasionally returns the literal string "NaN" (or "Infinity")
+    # for a degenerate/zero-area parcel's computed centroid -- float() parses
+    # those "successfully" into a non-finite value, which then breaks
+    # PostgREST's strict JSON parser downstream ("Empty or invalid json"),
+    # crashing the whole batch upsert. Reject non-finite results here instead.
+    return v if (v is None or math.isfinite(v)) else None
 
 
 def clean(value):
