@@ -14,10 +14,10 @@ it's the map for "what's done, what's next" across sessions.
 | Santa Cruz | Countywide property/owner info | `santa_cruz_property_info` | `santa_cruz_property_tracker.py` | Live (daily 8:00am), ~43,230 parcels |
 | Maricopa | Countywide property/owner info | `maricopa_property_info`, `maricopa_scrape_state` | `maricopa_property_tracker.py` | Live (daily 8:30am), ~1.76M parcels, resumable checkpoint |
 | Pinal | Countywide property/owner info | `pinal_property_info`, `pinal_scrape_state` | `pinal_property_tracker.py` | Live (daily 9:00am), ~287k parcels, resumable checkpoint |
-| Yavapai | Countywide property/owner info | `yavapai_property_info` | `yavapai_property_tracker.py` | **Blocked** -- code complete, table created, but gis.yavapaiaz.gov 403s every GitHub Actions IP (see note below); daily schedule disabled, workflow_dispatch-only until resolved |
+| Yavapai | Countywide property/owner info | `yavapai_property_info` | `yavapai_property_tracker.py` | Live (daily 9:30am/16:30 UTC), ~186,484 parcels, ADWR statewide fallback source dated May 2023 (no mailing/valuation data, staler than the county's own GIS), no resumable checkpoint needed |
 | Apache | Countywide property/owner info | `apache_property_info` | `apache_property_tracker.py` | Live (daily 12:00pm/19:00 UTC), ~58k parcels, no mailing address or valuation data, no resumable checkpoint needed |
 | Cochise | Countywide property/owner info | `cochise_property_info` | `cochise_property_tracker.py` | Live (daily 11:00am), ~122,936 parcels, no resumable checkpoint needed, has valuation (FCV only, no sale history) + lat/lon |
-| Coconino | -- | -- | -- | **Deferred** -- see note below (public layer lacks owner/valuation data) |
+| Coconino | Countywide property/owner info | `coconino_property_info` | `coconino_property_tracker.py` | Live (daily 2:30pm/21:30 UTC), ~78,368 parcels, ADWR "Parcel Finder" MapServer source dated November 2023 (no mailing/valuation data, staler than the county's own GIS), no resumable checkpoint needed |
 | Gila | Countywide property/owner info | `gila_property_info` | `gila_property_tracker.py` | Live (daily 12:30pm/19:30 UTC), no mailing address or valuation data, no resumable checkpoint needed |
 | Graham | Countywide property/owner info | `graham_property_info` | `graham_property_tracker.py` | Live (daily 1:00pm/20:00 UTC), ADWR statewide fallback source (no mailing/valuation data, staler than a county's own live GIS), no resumable checkpoint needed |
 | Greenlee | Countywide property/owner info | `greenlee_property_info` | `greenlee_property_tracker.py` | Live (daily 1:30pm/20:30 UTC), ~4,706 parcels (smallest AZ county), ADWR statewide fallback source (no mailing/valuation data, staler than a county's own live GIS), no resumable checkpoint needed |
@@ -26,11 +26,11 @@ it's the map for "what's done, what's next" across sessions.
 | Navajo | Countywide property/owner info | `navajo_property_info` | `navajo_property_tracker.py` | Live (daily 12:00pm), ~2,000+ parcels verified in test run, no valuation data |
 | Yuma | Countywide property/owner info | `yuma_property_info` | `yuma_property_tracker.py` | Live (daily 10:00am), ~70,112 parcels, has valuation + sale history + lat/lon |
 
-**All 15 Arizona counties are now covered or explicitly accounted for:** 13
-counties live and verified (Pima, Santa Cruz, Maricopa, Pinal, Cochise,
-Mohave, Yuma, Navajo, Apache, Gila, Graham, Greenlee, La Paz), 1 blocked by
-a WAF with the fix documented (Yavapai), 1 deliberately deferred with the
-reason documented (Coconino, no bulk owner/valuation API).
+**All 15 Arizona counties are now live and verified** (Pima, Santa Cruz,
+Maricopa, Pinal, Cochise, Mohave, Yuma, Navajo, Apache, Gila, Graham,
+Greenlee, La Paz, Coconino, Yavapai). The last two, Coconino and Yavapai,
+were unblocked on 2026-08-15 by switching both to ADWR statewide fallback
+sources -- see the dated note below for how.
 
 **Apache's `PARCEL_NUM` null-row bug, found and fixed (2026-08-14):** the
 first live test run failed with a Postgres `23502` not-null violation --
@@ -54,21 +54,19 @@ itself, even with explicit approval -- it's treated as "modifying system/
 security settings"), and it's now confirmed working end-to-end against the
 live prototype's exact query pattern for both counties.
 
-**Yavapai blocked by WAF (2026-08-13):** `gis.yavapaiaz.gov` (Yavapai's own
-GIS server, hosting the same ArcGIS FeatureServer pattern used successfully
-for every other county) returns 403 Forbidden to every request from GitHub
-Actions runner IPs, while the identical request succeeds from a normal
-browser/residential IP. Two fixes were tried and both failed identically:
-realistic browser headers, then `curl_cffi` with Chrome TLS-fingerprint
-impersonation (the standard fix for "browser works, script gets 403").
-Since even a real-TLS-fingerprint client still gets 403'd, this looks like
-IP/ASN-range blocking of datacenter IPs specifically, not fingerprint-based
-bot detection -- which no client-side spoofing from an Actions runner can
-get around. All the code/schema/workflow is deployed and ready; the daily
-`schedule:` trigger was removed from `daily-yavapai-scrape.yml` (left
-`workflow_dispatch`-only) so it doesn't fail-spam every day. Revisit if a
-proxy/different egress IP becomes available, or if Yavapai publishes the
-same data through a different (non-WAF'd) source.
+**Yavapai blocked by WAF (2026-08-13) -- RESOLVED 2026-08-15, see note
+below:** `gis.yavapaiaz.gov` (Yavapai's own GIS server, hosting the same
+ArcGIS FeatureServer pattern used successfully for every other county)
+returns 403 Forbidden to every request from GitHub Actions runner IPs,
+while the identical request succeeds from a normal browser/residential IP.
+Two fixes were tried and both failed identically: realistic browser
+headers, then `curl_cffi` with Chrome TLS-fingerprint impersonation (the
+standard fix for "browser works, script gets 403"). Since even a
+real-TLS-fingerprint client still gets 403'd, this looked like IP/ASN-range
+blocking of datacenter IPs specifically, not fingerprint-based bot
+detection -- which no client-side spoofing from an Actions runner could get
+around. Rather than keep fighting the WAF, the tracker was switched to a
+different, unrelated ADWR source entirely (see below).
 
 **Yavapai and every new county built on 2026-08-13/14 (Apache, Gila,
 Graham, Greenlee, La Paz, Navajo) deliberately only have an
@@ -77,22 +75,57 @@ hitting the classifier block (see Security note below) across each new
 county during the build. The `anon` grant SQL for all of them is queued
 up in a NOTE at the bottom of each `supabase_<county>_property_schema.sql`
 file, and has also been assembled into one consolidated batch for Juan to
-run himself in the Supabase SQL Editor in a single pass.
+run himself in the Supabase SQL Editor in a single pass. Coconino and
+Yavapai's rebuilt (2026-08-15) tables follow the same pattern.
 
 **Coconino deferred -- public layer strips owner/valuation data
-(2026-08-13):** Coconino's most prominent official public ArcGIS layer,
-`Coconino_County_Parcels_Public_View`, only exposes 6 fields (APN, account
-number, situs address/city, shape area/length) -- explicitly no owner name
-and no valuation, by design (its own description says "...Public View with
-limited fields"). The full owner/valuation/sale data instead lives behind
-a Tyler Technologies "EagleWeb" system (`eagleassessor.coconino.az.gov`),
-a per-parcel HTML search portal (search by name/parcel/address), not a
-bulk-queryable API -- no bulk/JSON endpoint was found. This doesn't fit the
-established bulk-pull playbook; it would need a fundamentally different,
-much slower per-parcel scraper (similar in shape to Pima's original
-enrichment approach). Skipped for now in favor of counties with a real
-bulk API -- revisit with a per-parcel EagleWeb scraper if Coconino coverage
-becomes a priority.
+(2026-08-13) -- RESOLVED 2026-08-15, see note below:** Coconino's most
+prominent official public ArcGIS layer, `Coconino_County_Parcels_Public_View`,
+only exposes 6 fields (APN, account number, situs address/city, shape
+area/length) -- explicitly no owner name and no valuation, by design (its
+own description says "...Public View with limited fields"). The full
+owner/valuation/sale data instead lives behind a Tyler Technologies
+"EagleWeb" system (`eagleassessor.coconino.az.gov`), a per-parcel HTML
+search portal (search by name/parcel/address), not a bulk-queryable API --
+no bulk/JSON endpoint was found there. Rather than build a much slower
+per-parcel scraper against EagleWeb, a different bulk ADWR source with
+owner data was found instead (see below).
+
+**Coconino and Yavapai both unblocked via ADWR statewide sources
+(2026-08-15):** both counties' blockers turned out to have the same fix as
+Graham/Greenlee/La Paz before them -- the Arizona Department of Water
+Resources (ADWR) publishes statewide parcel mirrors on
+`azwatermaps.azwater.gov` that are unrelated to either county's own
+(blocked/limited) GIS infrastructure:
+- **Yavapai** now pulls from `General/Parcels_for_TEST` (FeatureServer),
+  layer 8 ("Yavapai_Parcels") -- the same service already used for Graham/
+  Greenlee/La Paz. Confirmed 186,484 parcels live, source extract dated
+  May 2023. This is an entirely different ADWR service from
+  `gis.yavapaiaz.gov`, so the WAF block doesn't apply. The old schema's
+  richer fields (subdivision, zoning, mailing address, account number)
+  are gone -- the new source only has owner name, situs address pieces,
+  book/map/parcel/suffix, acreage, and a computed lat/lon centroid.
+- **Coconino** now pulls from a *different* ADWR service, `General/Parcels`
+  (MapServer, ADWR's "Parcel Finder" tool), layer 2 ("Coconino"). Confirmed
+  78,368 parcels live, source extract dated November 2023. This is a
+  MapServer rather than a FeatureServer like every other tracker in this
+  repo, but its `/query` REST endpoint is functionally identical (same
+  pagination/centroid params, confirmed via
+  `advancedQueryCapabilities.supportsPagination` and
+  `supportsReturningGeometryCentroid` both `true` on this layer) -- no
+  code changes needed beyond the URL and layer id. Unlike the old
+  `Coconino_County_Parcels_Public_View` layer, this one includes
+  `OWNER_NAME`.
+
+Both new sources share the same gaps as every other ADWR-sourced county in
+this repo (Graham/Greenlee/La Paz): no mailing address, no valuation, no
+sale history -- just owner name, situs address pieces, parcel-number
+components, acreage, and lat/lon. Both are below the ~200k-parcel
+checkpoint threshold, so neither needs a resumable checkpoint table.
+Yavapai's `daily-yavapai-scrape.yml` had its `schedule:` trigger restored
+(16:30 UTC / 9:30am Phoenix, right after Pinal); Coconino's
+`daily-coconino-scrape.yml` is a new workflow at 21:30 UTC / 2:30pm
+Phoenix (right after La Paz).
 
 ## The playbook (repeat this per county)
 
@@ -106,13 +139,21 @@ full sample record with `outFields=*` to see the real field names/types
 before writing any parsing code -- county layers use inconsistent field
 naming and formats (e.g. Maricopa pads numbers with commas and stores
 dates as epoch milliseconds; don't assume). If a county doesn't run its
-own mature public GIS FeatureServer, check the Arizona Dept. of Water
-Resources' statewide fallback service first
-(`https://azwatermaps.azwater.gov/arcgis/rest/services/General/Parcels_for_TEST/FeatureServer/<layer_id>`)
-before concluding no bulk source exists -- it covers several rural
-counties (confirmed for Graham, Greenlee, La Paz) with a shared field
-schema, though the data can be noticeably staler than a county's own
-live GIS.
+own mature public GIS FeatureServer (or its own layer omits owner/
+valuation data, or blocks GitHub Actions IPs), check the Arizona Dept. of
+Water Resources' statewide fallback services first -- there are at least
+two: `General/Parcels_for_TEST`
+(`https://azwatermaps.azwater.gov/arcgis/rest/services/General/Parcels_for_TEST/FeatureServer/<layer_id>`,
+confirmed for Graham, Greenlee, La Paz, Yavapai) and the broader
+`General/Parcels` "Parcel Finder" MapServer covering all 15 AZ counties
+as one layer each
+(`https://azwatermaps.azwater.gov/arcgis/rest/services/General/Parcels/MapServer/<layer_id>`,
+confirmed for Coconino) -- before concluding no bulk source exists. Both
+share the same field schema and query shape, though the data can be
+noticeably staler than a county's own live GIS. A MapServer's `/query`
+endpoint behaves the same as a FeatureServer's for these purposes --
+check `advancedQueryCapabilities` on the layer's `?f=json` metadata to
+confirm pagination/centroid support before assuming so.
 2. **Design the schema.** One row per parcel, primary key on the parcel
 number field. Standard columns: owner name, mailing address, property
 address, valuation (current + prior year), sale/deed history, physical
@@ -135,6 +176,11 @@ raise so the row lands in the defensive error-row path) when the
 parcel number is blank -- a single null-primary-key row will otherwise
 crash the entire batch upsert with Postgres `23502` (see the Apache
 bug note above).
+- Reject non-finite float values (`NaN`/`Infinity`, which ArcGIS can
+return for a degenerate/zero-area parcel's computed centroid) in the
+numeric-parsing helper with `math.isfinite()` -- otherwise a single bad
+centroid crashes the whole batch upsert with PostgREST's "Empty or
+invalid json" error.
 - `SAMPLE_LIMIT` and `MAX_RUNTIME_MINUTES` env vars for safe test runs
 and a runtime safety net.
 - If the county has roughly >200k parcels, add the resumable-offset
@@ -154,11 +200,15 @@ each new/changed file at
 `github.com/rewiredenergy/tucson-permit-tracker/new/main?filename=...`
 (or the edit URL for existing files), paste content into the
 CodeMirror editor, verify the line count matches the local file
-(Ctrl+End, check the ending line number) before committing -- pastes
-into CodeMirror can silently land partial/garbled, so always verify
-before commit.
-5. **Create the Supabase tables** by pasting the schema SQL into the
-Supabase SQL Editor (Monaco) and running with Ctrl+Enter.
+(Ctrl+End/Ctrl+Home, check the ending line number and content) before
+committing -- pastes into CodeMirror can silently land partial/garbled,
+so always verify before commit. After committing, double-check with a
+GitHub blob-page read (not just `raw.githubusercontent.com`, which sits
+behind a CDN that can serve a stale cached copy for a few minutes after
+a fresh commit).
+5. **Create the Supabase tables** via the Supabase MCP tools
+(`apply_migration`) or by pasting the schema SQL into the Supabase SQL
+Editor (Monaco) and running with Ctrl+Enter.
 6. **Add the workflow** at `.github/workflows/daily-<county>-scrape.yml`,
 staggered 30 minutes after the last one scheduled, `workflow_dispatch`
 inputs for `sample_limit`/`max_runtime_minutes`, using the
