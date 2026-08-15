@@ -1,69 +1,76 @@
 """
 Yavapai County Property Tracker
 ----------------------------------
-Builds a per-parcel property profile for Yavapai County, Arizona
-(~188k parcels -- between Santa Cruz's ~43k and Pinal's ~287k) from ONE
-public bulk ArcGIS FeatureServer layer ("Parcels", layer 4 of the
-"Property" service) published directly by Yavapai County's own GIS
-server (gis.yavapaiaz.gov) -- the same backend behind the county's
-public Assessor Parcel Information map. No API token needed.
+Builds a per-parcel property profile for Yavapai County, Arizona (~186.5k
+parcels) from the Arizona Department of Water Resources' (ADWR) statewide
+"Parcels_for_TEST" FeatureServer, layer 8 ("Yavapai_Parcels") -- the same
+public fallback service already used for Graham/Greenlee/La Paz. Confirmed
+live via direct browser query: 186,484 parcels, layer description states
+the source extract is dated May 2023
+("U:\\Resources\\Data\\AZ_Parcels\\Yavapai\\2023\\May").
 
-Unlike Pima/Santa Cruz/Maricopa/Pinal, this county's public parcel
-layer carries NO valuation, year-built, or square-footage data --
-just ownership, mailing address, situs (property) address, zoning,
-subdivision, and deeded acreage. That's a real gap vs. the other
-counties (flagged in COUNTIES.md), not a scraper bug: there's simply
-no free bulk source for Yavapai valuation/building data at this time.
+WHY THIS REPLACES THE OLD SOURCE: this tracker previously pointed at
+Yavapai County's own GIS FeatureServer (gis.yavapaiaz.gov). That server's
+WAF returns a 403 on every request from GitHub Actions runner IPs -- two
+independent bypass attempts failed (realistic browser headers, then
+curl_cffi Chrome-TLS impersonation). See COUNTIES.md for the full history.
+The `schedule:` trigger was disabled and the tracker sat idle. This ADWR
+mirror is a different, unrelated, unblocked service, so it sidesteps the
+WAF entirely.
 
-Two address fields matter here and are easy to mix up:
-  - ADDRESS/CITY/STATE/ZIP is the OWNER'S MAILING address (can be
-    anywhere -- a PO box, a different city, out of state).
-  - SITUS_ADD_DOR is the actual PHYSICAL/PROPERTY address, which is
-    what property_address should be. Verified against live samples:
-    e.g. a Seligman-mailing-address owner (PO BOX 858) whose parcel's
-    SITUS_ADD_DOR was a different road entirely (56492 N La Carro Ln).
-ZIP is a bare 9-digit string (zip5+zip4 concatenated, no dash) when
-present -- reformatted to zip5-zip4 below, same idea as Pinal's
-PSTLZIP5/PSTLZIP4 split but starting from one field instead of two.
+IMPORTANT GAPS: same shape as the other ADWR-sourced counties (Graham/
+Greenlee/La Paz/Coconino) -- this layer has NO mailing address field (only
+a situs "site address"/city/zip, frequently blank) and NO valuation fields
+at all (no full cash value, assessed value, land/improvement value) and no
+sale price/date history. What's present: owner name, situs address pieces,
+book/map/parcel/suffix (the assessor's parcel-number components), acreage,
+and lat/lon via computed centroid. This is a real regression from the old
+schema's richer field set (subdivision, zoning, mailing address, account
+number) -- but the old source is permanently unreachable, so this is the
+best available public option: real bulk owner/parcel data instead of none.
 
-At ~188k parcels (under the ~200k threshold used elsewhere in this
-repo), a full sweep completes in a few minutes -- no resumable
-checkpoint table needed, same simpler design as Santa Cruz's tracker.
-The run is still time-boxed via MAX_RUNTIME_MINUTES as a safety net.
+COORDINATES: no native LATITUDE/LONGITUDE/X/Y fields. Uses
+returnCentroid=true&outSR=4326 (with returnGeometry=false) -- same approach
+already verified live against the sibling La Paz/Graham/Greenlee layers on
+this same ADWR service.
+
+At ~186.5k parcels (under this repo's ~200k checkpoint threshold), a full
+sweep completes in a handful of minutes -- no resumable-offset checkpoint
+table needed, same simpler design as Santa Cruz/Yuma/Cochise/Navajo/Apache/
+Gila/Graham/Greenlee/La Paz.
 
 Environment variables (GitHub Secrets -- never hard-coded):
   SUPABASE_URL               e.g. https://abcdefgh.supabase.co
   SUPABASE_SERVICE_ROLE_KEY  the service_role secret from Supabase
   SAMPLE_LIMIT                optional; e.g. "500" to stop early (test runs)
-  MAX_RUNTIME_MINUTES         optional; default 55
+  MAX_RUNTIME_MINUTES         optional; default 55 (safety net -- this job
+                               normally finishes in a handful of minutes)
 """
 
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
 
 import requests
-from curl_cffi import requests as cffi_requests
 import math
 
-FEATURE_URL = "https://gis.yavapaiaz.gov/arcgis/rest/services/Property/FeatureServer/4/query"
+FEATURE_URL = ("https://azwatermaps.azwater.gov/arcgis/rest/services/General/"
+               "Parcels_for_TEST/FeatureServer/8/query")
 
-PAGE_SIZE = 2000
+PAGE_SIZE = 2000  # this layer's maxRecordCount
+REQUEST_DELAY = 0.3  # seconds between page requests -- be polite to the server
 
 OUT_FIELDS = (
-    "PARCEL_ID,PARLABEL,NAME,SECONDARY,ADDRESS,CITY,STATE,ZIP,CO_ADDRESS,"
-    "SITUS_ADD_DOR,ACRE_DEED,ZONING,SUBNAME,ACCOUNTNO,LASTUPDATED"
+    "OBJECTID,ID,COUNTY,APN,BOOK,MAP,PARCEL,SUFFIX,SITE_ADDRESS,SITE_CITY,"
+    "SITE_ZIP,OWNER_NAME,URL,ACRES_US"
 )
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://gis.yavapaiaz.gov/",
-    "Origin": "https://gis.yavapaiaz.gov",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) RewiredYavapaiPropertyTracker/1.0",
+    "Accept": "application/json",
 }
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -83,43 +90,30 @@ SUPABASE_HEADERS = {
 session = requests.Session()
 session.headers.update(HEADERS)
 
-# gis.yavapaiaz.gov sits behind a WAF that 403s every request from GitHub
-# Actions runner IPs, while the identical request succeeds from a
-# residential/browser IP. Two fixes have been tried and both still get
-# 403'd from Actions:
-#   1. Realistic browser headers (UA/Accept/Referer/Origin) on plain
-#      `requests` -- no change.
-#   2. curl_cffi with `impersonate="chrome124"` (real Chrome TLS
-#      fingerprint) -- still 403'd identically.
-# Since a real-TLS-fingerprint client is STILL blocked, this is very
-# likely IP/ASN-range blocking (GitHub Actions' datacenter IPs are
-# blocklisted outright), not fingerprint-based bot detection -- no amount
-# of header/TLS spoofing from an Actions runner will fix that. Left as
-# `arcgis_session` (rather than reverting to plain `requests`) in case a
-# future fix (e.g. a proxy, or a different runner IP range) makes the
-# distinction relevant again; today (2026-08-13) it makes no difference.
-# See COUNTIES.md for the decision to defer this county rather than keep
-# debugging it. Supabase writes use the plain `requests` session above.
-arcgis_session = cffi_requests.Session(impersonate="chrome124")
-arcgis_session.headers.update(HEADERS)
-
 _start = time.monotonic()
+
+_HREF_RE = re.compile(r'href="([^"]+)"')
 
 
 # ---------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------
 def to_num(value):
+    if value is None:
+        return None
+    s = str(value).strip().replace(",", "")
+    if s == "":
+        return None
     try:
-        v = float(value) if value not in (None, "") else None
-    except (ValueError, TypeError):
+        v = float(s)
+    except ValueError:
         return None
     # ArcGIS occasionally returns the literal string "NaN" (or "Infinity")
     # for a degenerate/zero-area parcel's computed centroid -- float() parses
     # those "successfully" into a non-finite value, which then breaks
     # PostgREST's strict JSON parser downstream ("Empty or invalid json"),
     # crashing the whole batch upsert. Reject non-finite results here instead.
-    return v if (v is None or math.isfinite(v)) else None
+    return v if math.isfinite(v) else None
 
 
 def clean(value):
@@ -127,73 +121,51 @@ def clean(value):
     return v or None
 
 
-def epoch_ms_to_date(value):
-    if value in (None, ""):
+def extract_url(value):
+    # ADWR's URL field is a raw HTML anchor tag, e.g.
+    # '<a href="http://..." target="_blank">Assessor Parcel Search Link</a>'
+    v = clean(value)
+    if not v:
         return None
-    try:
-        return datetime.fromtimestamp(int(value) / 1000, tz=timezone.utc).date().isoformat()
-    except (ValueError, TypeError, OSError):
-        return None
-
-
-def format_zip(value):
-    z = clean(value)
-    if not z:
-        return None
-    if len(z) == 9 and z.isdigit():
-        return f"{z[:5]}-{z[5:]}"
-    return z
+    m = _HREF_RE.search(v)
+    return m.group(1) if m else v
 
 
 # ---------------------------------------------------------------
-# Bulk ArcGIS FeatureServer pagination -- single layer, no join needed
+# Bulk ArcGIS FeatureServer pagination
 # ---------------------------------------------------------------
-def fetch_all_parcels() -> list:
-    features = []
-    offset = 0
-    while True:
-        elapsed_min = (time.monotonic() - _start) / 60
-        if elapsed_min >= MAX_RUNTIME_MINUTES:
-            print(f"  Reached runtime budget ({MAX_RUNTIME_MINUTES} min) mid-fetch -- "
-                  f"stopping with {len(features)} rows so far.")
-            break
-        params = {
-            "where": "1=1",
-            "outFields": OUT_FIELDS,
-            "returnGeometry": "false",
-            "resultOffset": offset,
-            "resultRecordCount": PAGE_SIZE,
-            "orderByFields": "PARCEL_ID ASC",
-            "f": "json",
-        }
-        last_err = None
-        d = None
-        for attempt in range(1, 4):
-            try:
-                r = arcgis_session.get(FEATURE_URL, params=params, timeout=60)
-                r.raise_for_status()
-                d = r.json()
-                if "error" in d:
-                    raise RuntimeError(str(d["error"])[:200])
-                last_err = None
-                break
-            except Exception as e:  # noqa: BLE001
-                last_err = e
-                time.sleep(3 * attempt)
-        if last_err is not None:
-            raise RuntimeError(f"Parcels fetch failed at offset {offset}: {last_err}")
-        feats = d.get("features") or []
-        if not feats:
-            break
-        features.extend(f["attributes"] for f in feats)
-        if len(features) % 20000 < PAGE_SIZE:
-            print(f"  fetched {len(features)} rows so far")
-        offset += PAGE_SIZE
-        if SAMPLE_LIMIT and len(features) >= SAMPLE_LIMIT:
-            break
-        if len(feats) < PAGE_SIZE:
-            break
-    return features
+def fetch_page(offset: int) -> list:
+    params = {
+        "where": "1=1",
+        "outFields": OUT_FIELDS,
+        "returnGeometry": "false",
+        "returnCentroid": "true",  # server-computed lat/lon; layer has no native lat/lon fields
+        "outSR": "4326",
+        "resultOffset": offset,
+        "resultRecordCount": PAGE_SIZE,
+        "orderByFields": "APN ASC",
+        "f": "json",
+    }
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            r = session.get(FEATURE_URL, params=params, timeout=60)
+            r.raise_for_status()
+            d = r.json()
+            if "error" in d:
+                raise RuntimeError(str(d["error"])[:200])
+            out = []
+            for f in (d.get("features") or []):
+                attrs = f["attributes"]
+                centroid = f.get("centroid") or {}
+                attrs["_LONGITUDE"] = centroid.get("x")
+                attrs["_LATITUDE"] = centroid.get("y")
+                out.append(attrs)
+            return out
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            time.sleep(3 * attempt)
+    raise RuntimeError(f"fetch failed at offset {offset}: {last_err}")
 
 
 # ---------------------------------------------------------------
@@ -204,14 +176,14 @@ def fetch_all_parcels() -> list:
 # the primary key). Every upserted row -- normal or a defensive error
 # row -- gets padded to this exact column set: PostgREST's bulk upsert
 # rejects a batch whose objects don't all have EXACTLY the same keys
-# (PGRST102 "All object keys must match").
+# (PGRST102 "All object keys must match"), the same crash Pima's
+# property_info_tracker.py hit in production before that fix was added
+# there. jurisdiction defaults to "yavapai_county" since the column is
+# NOT NULL.
 ROW_COLUMNS = [
-    "jurisdiction", "parcel_label", "property_address", "subdivision",
-    "owner_name", "owner_name_2",
-    "mailing_address", "mailing_city", "mailing_state", "mailing_zip",
-    "care_of_address",
-    "land_size_acres", "zoning", "account_number",
-    "source_last_updated",
+    "jurisdiction", "property_address", "property_city", "property_zip",
+    "owner_name", "book", "map_number", "parcel_number", "suffix",
+    "land_size_acres", "latitude", "longitude", "source_url",
     "status", "error_note", "raw", "enriched_at", "updated_at",
 ]
 
@@ -225,25 +197,23 @@ def normalize_row(row: dict) -> dict:
 
 
 def build_row(a: dict, now_iso: str) -> dict:
-    parcel = clean(a.get("PARCEL_ID"))
-    owner_name = clean(a.get("NAME"))
+    parcel = clean(a.get("APN")) or clean(a.get("ID"))
+    owner_name = clean(a.get("OWNER_NAME"))
     return {
         "parcel": parcel,
         "jurisdiction": "yavapai_county",
-        "parcel_label": clean(a.get("PARLABEL")),
-        "property_address": clean(a.get("SITUS_ADD_DOR")),
-        "subdivision": clean(a.get("SUBNAME")),
+        "property_address": clean(a.get("SITE_ADDRESS")),
+        "property_city": clean(a.get("SITE_CITY")),
+        "property_zip": clean(a.get("SITE_ZIP")),
         "owner_name": owner_name,
-        "owner_name_2": clean(a.get("SECONDARY")),
-        "mailing_address": clean(a.get("ADDRESS")),
-        "mailing_city": clean(a.get("CITY")),
-        "mailing_state": clean(a.get("STATE")),
-        "mailing_zip": format_zip(a.get("ZIP")),
-        "care_of_address": clean(a.get("CO_ADDRESS")),
-        "land_size_acres": to_num(a.get("ACRE_DEED")),
-        "zoning": clean(a.get("ZONING")),
-        "account_number": clean(a.get("ACCOUNTNO")),
-        "source_last_updated": epoch_ms_to_date(a.get("LASTUPDATED")),
+        "book": clean(a.get("BOOK")),
+        "map_number": clean(a.get("MAP")),
+        "parcel_number": clean(a.get("PARCEL")),
+        "suffix": clean(a.get("SUFFIX")),
+        "land_size_acres": to_num(a.get("ACRES_US")),
+        "latitude": to_num(a.get("_LATITUDE")),
+        "longitude": to_num(a.get("_LONGITUDE")),
+        "source_url": extract_url(a.get("URL")),
         "status": "enriched" if owner_name else "no_owner_data",
         "enriched_at": now_iso,
         "updated_at": now_iso,
@@ -262,9 +232,7 @@ def upsert(table: str, rows: list, on_conflict: str = None) -> None:
     if on_conflict:
         url += f"?on_conflict={on_conflict}"
         headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
-    total = len(rows)
-    done = 0
-    for i in range(0, total, 500):
+    for i in range(0, len(rows), 500):
         batch = rows[i:i + 500]
         last_err = None
         for attempt in range(1, 6):
@@ -284,8 +252,6 @@ def upsert(table: str, rows: list, on_conflict: str = None) -> None:
                 time.sleep(wait)
         if last_err is not None:
             raise RuntimeError(f"Supabase write to {table} failed after 5 attempts: {last_err}")
-        done += len(batch)
-        print(f"  saved batch of {len(batch)} ({done}/{total})")
 
 
 # ---------------------------------------------------------------
@@ -297,30 +263,48 @@ def main() -> None:
           + (f" -- TEST MODE, sample limit {SAMPLE_LIMIT}" if SAMPLE_LIMIT else "")
           + f" -- runtime budget {MAX_RUNTIME_MINUTES} min")
 
-    raw_rows = fetch_all_parcels()
-    if SAMPLE_LIMIT:
-        raw_rows = raw_rows[:SAMPLE_LIMIT]
+    offset = 0
+    processed = 0
+    pages = 0
 
-    rows = []
-    for a in raw_rows:
-        try:
-            rows.append(normalize_row(build_row(a, now_iso)))
-        except Exception as e:  # noqa: BLE001
-            pid = a.get("PARCEL_ID") or "unknown"
-            print(f"  warning: row build failed for {pid}: {e}")
-            rows.append(normalize_row({
-                "parcel": pid, "status": "error",
-                "error_note": str(e)[:300], "updated_at": now_iso,
-            }))
+    while True:
+        elapsed_min = (time.monotonic() - _start) / 60
+        if elapsed_min >= MAX_RUNTIME_MINUTES:
+            print(f"Reached runtime budget ({MAX_RUNTIME_MINUTES} min) -- "
+                  f"stopping at offset {offset} ({processed} parcels this run).")
+            break
+        if SAMPLE_LIMIT and processed >= SAMPLE_LIMIT:
+            print(f"Reached sample limit ({SAMPLE_LIMIT}) -- stopping.")
+            break
 
-    # Defensive de-dup, keeping the LAST row seen per parcel -- Postgres
-    # rejects an upsert batch containing the same conflict key twice
-    # ("ON CONFLICT DO UPDATE command cannot affect row a second time").
-    deduped = list({r["parcel"]: r for r in rows}.values())
+        time.sleep(REQUEST_DELAY)
+        raw_rows = fetch_page(offset)
+        if not raw_rows:
+            print(f"Reached the end of the parcel list at offset {offset} -- full sweep complete!")
+            break
 
-    print(f"Upserting {len(deduped)} parcels to Supabase...")
-    upsert("yavapai_property_info", deduped, on_conflict="parcel")
-    print(f"Done. Upserted {len(deduped)} parcels this run.")
+        rows = []
+        for a in raw_rows:
+            try:
+                rows.append(normalize_row(build_row(a, now_iso)))
+            except Exception as e:  # noqa: BLE001
+                pid = a.get("APN") or a.get("ID") or "unknown"
+                print(f"  warning: row build failed for {pid}: {e}")
+                rows.append(normalize_row({
+                    "parcel": pid, "status": "error",
+                    "error_note": str(e)[:300], "updated_at": now_iso,
+                }))
+
+        deduped = list({r["parcel"]: r for r in rows}.values())
+        upsert("yavapai_property_info", deduped, on_conflict="parcel")
+
+        processed += len(deduped)
+        pages += 1
+        offset += PAGE_SIZE
+        if pages % 10 == 0:
+            print(f"  {pages} pages / {processed} parcels this run (now at offset {offset})")
+
+    print(f"Done. Upserted {processed} parcels this run across {pages} pages.")
 
 
 if __name__ == "__main__":
