@@ -1,74 +1,88 @@
--- Yavapai County Property Info schema
--- One row per Yavapai County, Arizona parcel (~188k parcels countywide --
--- between Santa Cruz's ~43k and Pinal's ~287k). Populated from a single
--- public bulk ArcGIS FeatureServer layer ("Parcels", layer 4 of the
--- "Property" service) published directly by Yavapai County's own GIS
--- server (gis.yavapaiaz.gov) -- no API token needed.
+-- Yavapai County property/owner info table.
+-- Source: ADWR statewide "Parcels_for_TEST" FeatureServer, layer 8
+-- ("Yavapai_Parcels") -- the same public fallback service already used
+-- for Graham/Greenlee/La Paz. ~186,484 parcels, source extract dated
+-- May 2023. See yavapai_property_tracker.py for details.
 --
--- Unlike Pima/Santa Cruz/Maricopa/Pinal, this county's public parcel
--- layer has NO valuation, year-built, or square-footage data -- just
--- ownership, mailing address, situs (property) address, zoning,
--- subdivision, and deeded acreage. That's a real data-source gap, not
--- a scraper bug -- there's simply no free bulk source for Yavapai
--- valuation/building data at this time.
+-- REPLACES THE OLD SCHEMA (2026-08-13): the previous version of this table
+-- was built for gis.yavapaiaz.gov, Yavapai County's own GIS FeatureServer,
+-- which blocks every GitHub Actions runner IP with a WAF 403 -- confirmed
+-- with two independent bypass attempts (realistic browser headers, then
+-- curl_cffi Chrome-TLS impersonation). That table had 0 rows (the scraper
+-- never successfully ran), so it's safe to fully replace with this
+-- simpler, ADWR-sourced schema rather than migrate data. The old schema's
+-- richer fields (parcel_label, subdivision, mailing address, care-of
+-- address, zoning, account_number, source_last_updated) are dropped
+-- because this replacement source doesn't provide them -- see the GAP
+-- note below.
 --
--- At ~188k parcels (under this repo's ~200k checkpoint threshold), a
--- full sweep completes in a few minutes -- no resumable-offset
--- checkpoint table needed, same simpler design as Santa Cruz's tracker.
--- See yavapai_property_tracker.py.
+-- IMPORTANT GAP: this layer has NO mailing address field (only a situs
+-- address, frequently blank) and NO valuation fields at all (no full cash
+-- value, assessed value, land/improvement value) and no sale price/date
+-- history. What's present: owner name, situs address pieces, book/map/
+-- parcel/suffix, acreage, lat/lon. Data is noticeably staler than a county
+-- running its own live GIS service -- this is the best/only public option
+-- found for Yavapai now that the county's own service is permanently
+-- unreachable from GitHub Actions.
+--
+-- Below the ~200k-parcel threshold, so no resumable checkpoint table is
+-- needed (simple full re-pull every run, same as Santa Cruz/Yuma/Cochise/
+-- Navajo/Apache/Gila/Graham/Greenlee/La Paz).
 
-create table if not exists yavapai_property_info (
-  parcel                text primary key,               -- PARCEL_ID
-  jurisdiction          text not null default 'yavapai_county',
+drop table if exists yavapai_property_info;
 
-  -- identity / ownership
-  parcel_label          text,                            -- PARLABEL (e.g. "201-09-001C")
-  property_address      text,                            -- SITUS_ADD_DOR (physical property address)
-  subdivision            text,                            -- SUBNAME
-  owner_name              text,                            -- NAME
-  owner_name_2             text,                            -- SECONDARY
-  mailing_address           text,                            -- ADDRESS (owner's mailing address, can differ from property_address)
-  mailing_city               text,                            -- CITY
-  mailing_state               text,                            -- STATE
-  mailing_zip                   text,                            -- ZIP (reformatted zip5-zip4)
-  care_of_address                text,                            -- CO_ADDRESS
+create table yavapai_property_info (
+    parcel text primary key,  -- APN (falls back to the ADWR "ID" field if blank)
+    jurisdiction text not null default 'yavapai_county',
 
-  -- physical / classification (no valuation or year-built available)
-  land_size_acres                 numeric,                        -- ACRE_DEED
-  zoning                            text,                            -- ZONING
-  account_number                     text,                            -- ACCOUNTNO
+    property_address text,  -- SITE_ADDRESS -- frequently blank
+    property_city text,     -- SITE_CITY
+    property_zip text,      -- SITE_ZIP
+    owner_name text,        -- OWNER_NAME
 
-  source_last_updated                  date,                           -- LASTUPDATED (epoch ms on this layer)
+    book text,           -- assessor parcel-number components
+    map_number text,
+    parcel_number text,
+    suffix text,
 
-  -- bookkeeping
-  status                                 text not null default 'pending', -- pending | enriched | no_owner_data | error
-  error_note                              text,
-  raw                                        jsonb,
-  enriched_at                                 timestamptz,
-  updated_at                                   timestamptz not null default now()
+    land_size_acres double precision,  -- ACRES_US
+
+    latitude double precision,
+    longitude double precision,
+
+    source_url text,  -- link to the county assessor's own parcel search tool
+
+    status text not null default 'pending',  -- pending / enriched / no_owner_data / error
+    error_note text,
+    raw jsonb,
+
+    enriched_at timestamptz,
+    updated_at timestamptz not null default now()
 );
 
-create index if not exists yavapai_property_info_status_idx on yavapai_property_info (status);
-create index if not exists yavapai_property_info_owner_idx on yavapai_property_info (owner_name);
-create index if not exists yavapai_property_info_zoning_idx on yavapai_property_info (zoning);
+create index if not exists yavapai_property_info_owner_name_idx
+    on yavapai_property_info (owner_name);
 
--- ------------------------------------------------------------
--- Security (Row Level Security) -- same pattern as the other
--- tracker tables. The scraper writes with the service-role key
--- (bypasses RLS). Knockzy users read through this policy.
--- ------------------------------------------------------------
+create index if not exists yavapai_property_info_property_address_idx
+    on yavapai_property_info (property_address);
+
+create index if not exists yavapai_property_info_status_idx
+    on yavapai_property_info (status);
+
 alter table yavapai_property_info enable row level security;
 
-create policy "Authenticated users can read yavapai property info"
-  on yavapai_property_info for select
-  to authenticated
-  using (true);
+create policy "Allow authenticated read access"
+    on yavapai_property_info
+    for select
+    to authenticated
+    using (true);
 
--- NOTE: the live Knockzy prototype reads Supabase with the ANON key
--- (see the anon-RLS-gap note in COUNTIES.md, resolved 2026-08-13 for
--- maricopa/santa_cruz/pinal). Adding an anon policy is a privacy
--- decision that requires running SQL directly in the Supabase editor
--- yourself -- it's queued up in the consolidated anon-policy batch
--- delivered once all of today's new counties are built:
---   create policy "Anon can read yavapai property info"
---     on yavapai_property_info for select to anon using (true);
+-- NOTE: no `anon` read policy yet, on purpose -- see COUNTIES.md for why
+-- this and other new-county anon grants are deferred to one consolidated
+-- batch that Juan runs himself in the Supabase SQL Editor. Queued SQL:
+--
+-- create policy "Allow anon read access"
+--     on yavapai_property_info
+--     for select
+--     to anon
+--     using (true);
