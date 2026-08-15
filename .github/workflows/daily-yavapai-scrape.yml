@@ -1,22 +1,23 @@
 # Runs the Yavapai County Property Tracker once a day. Yavapai has
-# ~188k parcels (between Santa Cruz's ~43k and Pinal's ~287k), pulled
-# from a single public bulk ArcGIS FeatureServer layer in pages of
-# 2000. A full sweep finishes in a few minutes -- no resumable
-# checkpoint needed at this scale (same as Santa Cruz).
+# ~186.5k parcels, pulled from the ADWR statewide fallback FeatureServer
+# in pages of 2000. A full sweep finishes in a handful of minutes -- no
+# resumable checkpoint needed at this scale (same as Santa Cruz/Yuma/
+# Cochise/Navajo/Apache/Gila/Graham/Greenlee/La Paz).
 #
 # 16:30 UTC = 9:30 AM Phoenix time (after the Pinal scrape at 9:00 AM).
 # Arizona does not observe DST, so Phoenix is always UTC-7.
 #
-# SCHEDULE DISABLED (2026-08-13): gis.yavapaiaz.gov's WAF blocks GitHub
-# Actions runner IPs with a 403 on every request, confirmed even with
-# realistic browser headers and curl_cffi Chrome-TLS impersonation --
-# see the NOTE in yavapai_property_tracker.py and COUNTIES.md. Re-enable
-# the `schedule:` trigger once a working fetch path is found. Left as
-# workflow_dispatch-only so it can still be re-tested manually.
+# SCHEDULE RE-ENABLED (2026-08-15): the source was switched from
+# gis.yavapaiaz.gov (permanently blocked by a WAF on GitHub Actions runner
+# IPs -- confirmed with two independent bypass attempts) to the same ADWR
+# statewide FeatureServer already used for Graham/Greenlee/La Paz. See the
+# NOTE in yavapai_property_tracker.py and COUNTIES.md for the full history.
 
 name: Daily Yavapai County property scrape
 
 on:
+  schedule:
+    - cron: "30 16 * * *"
   workflow_dispatch:
     inputs:
       sample_limit:
