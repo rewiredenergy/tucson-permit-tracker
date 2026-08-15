@@ -1,0 +1,56 @@
+# Runs the Coconino County Property Tracker once a day. Coconino has
+# ~78.4k parcels, pulled from the ADWR statewide "Parcel Finder" MapServer
+# in pages of 2000. A full sweep finishes in a few minutes -- no resumable
+# checkpoint needed at this scale (same as Santa Cruz/Yuma/Cochise/Navajo/
+# Apache/Gila/Graham/Greenlee/La Paz).
+#
+# 21:30 UTC = 2:30 PM Phoenix time (30 min after the La Paz slot at 2:00
+# PM). Arizona does not observe DST, so Phoenix is always UTC-7.
+
+name: Daily Coconino County property scrape
+
+on:
+  schedule:
+    - cron: "30 21 * * *"
+  workflow_dispatch:
+    inputs:
+      sample_limit:
+        description: "Test mode: only upsert this many parcels (leave blank for a full run)"
+        required: false
+        default: ""
+      max_runtime_minutes:
+        description: "Runtime budget in minutes (leave blank for default 55)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coconino-property-scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Coconino County property scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SAMPLE_LIMIT: ${{ github.event.inputs.sample_limit }}
+          MAX_RUNTIME_MINUTES: ${{ github.event.inputs.max_runtime_minutes }}
+          PYTHONUNBUFFERED: "1"
+        run: python coconino_property_tracker.py
