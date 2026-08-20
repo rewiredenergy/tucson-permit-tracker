@@ -30,18 +30,42 @@ acreage, and lat/lon via computed centroid. Data is noticeably staler
 than a county running its own live GIS service with owner/valuation data
 -- this is the best public option found for Coconino at this time.
 
-COORDINATES: no native LATITUDE/LONGITUDE/X/Y fields on this layer. Uses
-returnCentroid=true&outSR=4326 (with returnGeometry=false) -- the same
-pattern verified working against the sibling "Parcels_for_TEST" service
-used by Graham/Greenlee/La Paz/Yavapai; this is the same ADWR backend
-(different service name/layer id, same ArcGIS REST API shape).
+COORDINATES: no native LATITUDE/LONGITUDE/X/Y fields on this layer, so
+lat/lon has to be derived from parcel geometry.
+
+This originally used returnCentroid=true&outSR=4326 (with
+returnGeometry=false), copied from the sibling "Parcels_for_TEST"
+service used by Graham/Greenlee/La Paz/Yavapai on the assumption that
+this is the same ADWR backend and therefore behaves identically. It is
+NOT. Verified live against this exact layer on 2026-08-19: this
+MapServer layer does not implement returnCentroid, and -- critically --
+does not error when you pass it. It silently ignores the parameter and
+returns features containing ONLY an "attributes" key: no "centroid",
+no "geometry". The old code then read f.get("centroid") or {}, got an
+empty dict, and wrote _LATITUDE/_LONGITUDE = None for every single row
+while still marking each row status="enriched". That is the exact
+mechanism behind 78,368 Coconino rows sitting at 100% NULL coordinates.
+
+The layer's own metadata corroborates this: advancedQueryCapabilities
+reports supportsPagination=true but does NOT contain a
+supportsReturningGeometryCentroid key at all. (The prior note here
+claimed both were true. They are not; that claim was never checked
+against this service.)
+
+Fix: request real polygon geometry (returnGeometry=true, outSR=4326)
+and compute the centroid client-side in ring_centroid() below. Verified
+live: the layer does return esriGeometryPolygon rings in WGS84 decimal
+degrees, e.g. [-111.71096479264996, 35.123110532078236] for a parcel
+near Flagstaff. geometryPrecision=6 trims the payload to ~0.1m
+resolution, which is far finer than a parcel centroid needs and keeps
+the extra bandwidth over the old (broken) attributes-only request
+modest.
 
 NOTE: this layer lives under a MapServer (General/Parcels/MapServer/2),
-not a FeatureServer like every other tracker in this repo -- but ArcGIS's
-REST query API is identical for both (same /query endpoint, same
-pagination/centroid params), confirmed via this layer's own
-advancedQueryCapabilities (supportsPagination, supportsReturningGeometryCentroid
-both true).
+not a FeatureServer like every other tracker in this repo. The /query
+endpoint and pagination params are identical, but as above, do NOT
+assume MapServer capability parity for geometry/centroid options --
+check the layer's advancedQueryCapabilities first.
 
 Below the ~200k-parcel threshold, so no resumable checkpoint table is
 needed (simple full re-pull every run, same design as Santa Cruz/Yuma/
@@ -129,6 +153,92 @@ def clean(value):
     return v or None
 
 
+def ring_centroid(rings):
+    """Area-weighted centroid of an ArcGIS polygon's ring list.
+
+    Returns (longitude, latitude), or (None, None) if the geometry is
+    missing or unusable.
+
+    ArcGIS polygons carry every ring in one flat "rings" list: exterior
+    rings wound clockwise, interior rings (holes) counter-clockwise.
+    The standard shoelace formula produces a SIGNED area whose sign
+    follows that winding, so summing each ring's signed area and signed
+    first moments makes holes subtract themselves automatically -- no
+    need to classify rings as outer vs. inner. A multi-part parcel
+    (several disjoint pieces sharing one APN, common here for split
+    ranch/forest parcels) falls out of the same sum as a true
+    area-weighted centre rather than the centre of whichever part
+    happened to be listed first.
+
+    The math runs directly on lon/lat degrees rather than a projected
+    CRS. That is a planar approximation, but at parcel scale the error
+    is far below a metre -- meaningless next to the parcel's own size,
+    and these coordinates exist to drop a pin on a property.
+
+    Falls back to the plain vertex mean when total area is ~0, which
+    covers the degenerate cases the county data does contain: zero-area
+    slivers and rings recorded as a single repeated point. Returning
+    the vertex mean beats returning NULL -- it is still inside/at the
+    parcel -- and avoids the NaN that dividing by zero area would push
+    downstream into PostgREST (see to_num()'s isfinite guard).
+    """
+    if not rings:
+        return None, None
+
+    area2 = 0.0   # 2x signed area
+    cx = 0.0      # 6x area-weighted x numerator
+    cy = 0.0
+    vx = vy = 0.0
+    vn = 0
+    minx = miny = float("inf")
+    maxx = maxy = float("-inf")
+
+    for ring in rings:
+        if not ring or len(ring) < 2:
+            continue
+        for i in range(len(ring) - 1):
+            try:
+                x0, y0 = float(ring[i][0]), float(ring[i][1])
+                x1, y1 = float(ring[i + 1][0]), float(ring[i + 1][1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            cross = x0 * y1 - x1 * y0
+            area2 += cross
+            cx += (x0 + x1) * cross
+            cy += (y0 + y1) * cross
+        for pt in ring:
+            try:
+                px, py = float(pt[0]), float(pt[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            vx += px
+            vy += py
+            vn += 1
+            minx = min(minx, px)
+            maxx = max(maxx, px)
+            miny = min(miny, py)
+            maxy = max(maxy, py)
+
+    if abs(area2) > 1e-12:
+        lon = cx / (3.0 * area2)
+        lat = cy / (3.0 * area2)
+        # Sanity guard: a valid polygon centroid always lies inside the
+        # geometry's own bounding box. A near-degenerate ring (a sliver, or
+        # an unclosed arc) can have a tiny-but-nonzero signed area that
+        # divides into a wildly out-of-range point, which would land a pin
+        # in the wrong county. Reject that and use the vertex mean instead.
+        if (math.isfinite(lon) and math.isfinite(lat)
+                and minx <= lon <= maxx and miny <= lat <= maxy):
+            return lon, lat
+
+    if vn:
+        lon, lat = vx / vn, vy / vn
+        if math.isfinite(lon) and math.isfinite(lat):
+            return lon, lat
+
+    return None, None
+
+
 def extract_url(value):
     # ADWR's URL field is a raw HTML anchor tag, e.g.
     # '<a href="http://..." target="_blank">Assessor Parcel Search Link</a>'
@@ -146,9 +256,12 @@ def fetch_page(offset: int) -> list:
     params = {
         "where": "1=1",
         "outFields": OUT_FIELDS,
-        "returnGeometry": "false",
-        "returnCentroid": "true",  # server-computed lat/lon; layer has no native lat/lon fields
+        # This layer silently ignores returnCentroid (see COORDINATES in the
+        # module docstring), so pull real rings and compute the centroid
+        # locally. geometryPrecision=6 caps coordinates at ~0.1m resolution.
+        "returnGeometry": "true",
         "outSR": "4326",
+        "geometryPrecision": "6",
         "resultOffset": offset,
         "resultRecordCount": PAGE_SIZE,
         "orderByFields": "APN ASC",
@@ -165,9 +278,9 @@ def fetch_page(offset: int) -> list:
             out = []
             for f in (d.get("features") or []):
                 attrs = f["attributes"]
-                centroid = f.get("centroid") or {}
-                attrs["_LONGITUDE"] = centroid.get("x")
-                attrs["_LATITUDE"] = centroid.get("y")
+                lon, lat = ring_centroid((f.get("geometry") or {}).get("rings"))
+                attrs["_LONGITUDE"] = lon
+                attrs["_LATITUDE"] = lat
                 out.append(attrs)
             return out
         except Exception as e:  # noqa: BLE001

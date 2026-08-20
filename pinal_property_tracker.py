@@ -43,6 +43,28 @@ here: de-dup a batch by parcel right before upsert, keeping the last
 row seen (Postgres otherwise rejects the batch with 21000 "ON CONFLICT
 DO UPDATE command cannot affect row a second time").
 
+COORDINATES: this layer's attribute table has no LATITUDE/LONGITUDE (or
+X/Y) fields at all -- confirmed via the layer's field list. Rather than
+pull full polygon geometry (expensive at this row count), the request
+below asks ArcGIS to compute a per-feature centroid server-side with
+returnCentroid=true&outSR=4326 (combined with returnGeometry=false so
+the full polygon is never transferred). Verified live against this
+exact layer: a two-row test query returned
+{"centroid": {"x": -111.197..., "y": 32.505...}} per feature, i.e.
+x=longitude, y=latitude in WGS84 decimal degrees. fetch_page() below
+merges that centroid into each row's attributes dict under synthetic
+keys (_LATITUDE/_LONGITUDE, underscore-prefixed so they can't collide
+with a real ArcGIS field name) before handing rows to build_row().
+
+REGRESSION NOTE (2026-08-19): the COORDINATES block above was first
+added in 7c395ec (8/13) and then silently undone hours later by the
+same-day refactor 27a9405, which restored fetch_page()/build_row() to
+their pre-fix shape. That regression is why ~99.3% of
+pinal_property_info rows carried NULL coordinates while still
+reporting status="enriched". Re-applied here -- do not drop these
+params or the latitude/longitude row keys without also updating the
+schema and the backfill expectations downstream in Knockzy.
+
 Environment variables (GitHub Secrets -- never hard-coded):
   SUPABASE_URL               e.g. https://abcdefgh.supabase.co
   SUPABASE_SERVICE_ROLE_KEY  the service_role secret from Supabase
@@ -198,6 +220,8 @@ def fetch_page(offset: int) -> list:
         "where": "1=1",
         "outFields": OUT_FIELDS,
         "returnGeometry": "false",
+        "returnCentroid": "true",  # server-computed lat/lon without pulling full polygon geometry
+        "outSR": "4326",
         "resultOffset": offset,
         "resultRecordCount": PAGE_SIZE,
         "orderByFields": "PARCELID ASC",
@@ -211,7 +235,14 @@ def fetch_page(offset: int) -> list:
             d = r.json()
             if "error" in d:
                 raise RuntimeError(str(d["error"])[:200])
-            return [f["attributes"] for f in (d.get("features") or [])]
+            out = []
+            for f in (d.get("features") or []):
+                attrs = f["attributes"]
+                centroid = f.get("centroid") or {}
+                attrs["_LONGITUDE"] = centroid.get("x")
+                attrs["_LATITUDE"] = centroid.get("y")
+                out.append(attrs)
+            return out
         except Exception as e:  # noqa: BLE001
             last_err = e
             time.sleep(3 * attempt)
@@ -241,6 +272,7 @@ ROW_COLUMNS = [
     "sale_price", "sale_date",
     "land_size_acres", "land_size_sqft",
     "source_last_updated",
+    "latitude", "longitude",
     "status", "error_note", "raw", "enriched_at", "updated_at",
 ]
 
@@ -291,6 +323,12 @@ def build_row(a: dict, now_iso: str) -> dict:
         "land_size_acres": to_num(a.get("GROSSAC")),
         "land_size_sqft": to_num(a.get("LANDSF")),
         "source_last_updated": epoch_ms_to_date(a.get("LASTUPDATE")),
+        # Synthetic keys merged in by fetch_page() from the server-computed
+        # centroid (x=lon, y=lat, WGS84) -- see the COORDINATES note in the
+        # module docstring. to_num() rejects the non-finite values ArcGIS
+        # returns for degenerate/zero-area parcels.
+        "latitude": to_num(a.get("_LATITUDE")),
+        "longitude": to_num(a.get("_LONGITUDE")),
         # No owner on file (right-of-way, common area, etc.) is a normal,
         # expected outcome here -- not a scrape failure.
         "status": "enriched" if owner_name else "no_owner_data",
