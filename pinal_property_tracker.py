@@ -371,6 +371,49 @@ def upsert(table: str, rows: list, on_conflict: str = None) -> None:
             raise RuntimeError(f"Supabase write to {table} failed after 5 attempts: {last_err}")
 
 
+def upsert_via_rpc(rpc_name: str, payload_key: str, rows: list) -> None:
+    """Same retry-wrapped batch-upsert pattern as upsert(), but calls a
+    Postgres RPC function instead of writing to the table endpoint directly.
+
+    Why this exists: PostgREST's login role (authenticator) carries a hard,
+    Supabase-managed statement_timeout of 8s that can't be changed via SQL --
+    it's a reserved role, rejected even from the Supabase Dashboard's own SQL
+    Editor. pinal_property_info's batch writes occasionally exceed 8s under
+    normal load (confirmed via pg_stat_statements: mean ~700ms, but repeated
+    max_exec_time readings landing at 7.6-7.75s -- cut off right at the wall),
+    which kills the write with a 57014 "canceling statement due to statement
+    timeout" error. upsert_pinal_property_batch() is a Postgres function
+    carrying its own function-level `statement_timeout = 60s` override
+    (function-level config isn't subject to the role restriction), reached
+    here via RPC instead of the raw table endpoint.
+    """
+    if not rows:
+        return
+    url = f"{SUPABASE_URL}/rest/v1/rpc/{rpc_name}"
+    for i in range(0, len(rows), 500):
+        batch = rows[i:i + 500]
+        last_err = None
+        for attempt in range(1, 6):
+            try:
+                r = session.post(url, headers=SUPABASE_HEADERS,
+                                  data=json.dumps({payload_key: batch}),
+                                  timeout=120)
+                if r.status_code >= 300:
+                    raise RuntimeError(f"Supabase RPC write via {rpc_name} failed "
+                                       f"({r.status_code}): {r.text[:300]}")
+                last_err = None
+                break
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout) as e:
+                last_err = e
+                wait = 5 * attempt
+                print(f"  Supabase RPC write via {rpc_name} network error "
+                      f"(attempt {attempt}/5): {e} -- retrying in {wait}s")
+                time.sleep(wait)
+        if last_err is not None:
+            raise RuntimeError(f"Supabase RPC write via {rpc_name} failed after 5 attempts: {last_err}")
+
+
 # ---------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------
@@ -421,7 +464,7 @@ def main() -> None:
         # upsert batch containing the same conflict key twice ("ON
         # CONFLICT DO UPDATE command cannot affect row a second time").
         deduped = list({r["parcel"]: r for r in rows}.values())
-        upsert("pinal_property_info", deduped, on_conflict="parcel")
+        upsert_via_rpc("upsert_pinal_property_batch", "payload", deduped)
 
         processed += len(deduped)
         pages += 1
